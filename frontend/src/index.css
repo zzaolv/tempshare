@@ -1,0 +1,23 @@
+
+/* src/index.css */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+  /* ✨ 将 body 背景设为您喜欢的浅灰色，作为整个页面的底色 */
+  @apply bg-brand-bg;
+}
+
+/* ✨ 恢复您喜欢的、带有动态光晕的背景样式 */
+.interactive-gradient-background {
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background: radial-gradient(circle 800px at var(--mouse-x) var(--mouse-y), 
+        rgba(43, 216, 251, 0.3),
+        rgba(238, 248, 100, 0.2),
+        rgba(100, 248, 197, 0.2),
+        transparent 80%);
+}

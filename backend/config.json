@@ -1,0 +1,11 @@
+{
+    "ServerPort": "8080",
+    "DatabasePath": "tempshare.db",
+    "ClamdSocket": "tcp://127.0.0.1:3310",
+    "MaxUploadSizeMB": 5120,
+    "RateLimit": {
+        "Enabled": true,
+        "Requests": 30,
+        "DurationMinutes": 10
+    }
+}
