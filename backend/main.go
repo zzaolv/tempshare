@@ -49,12 +49,15 @@ func main() {
 	router := gin.Default()
 	router.SetTrustedProxies(nil)
 
-	// ✨ 核心修改点：直接从 AppConfig 读取配置
-	allowedOrigins := strings.Split(AppConfig.CORSAllowedOrigins, ",")
+	// ✨ 核心修改点：直接从 AppConfig 读取配置，并增加健壮性检查
+	var allowedOrigins []string
+	if AppConfig.CORSAllowedOrigins != "" {
+		allowedOrigins = strings.Split(AppConfig.CORSAllowedOrigins, ",")
+	}
 	slog.Info("CORS Allowed Origins", "origins", allowedOrigins)
 
 	corsConfig := cors.Config{
-		AllowOrigins:     allowedOrigins,
+		AllowOrigins:     allowedOrigins, // 如果为空，CORS中间件会拒绝所有跨域请求
 		AllowMethods:     []string{"GET", "POST", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "X-File-Name", "X-File-Original-Size", "X-File-Encrypted", "X-File-Salt", "X-File-Expires-In", "X-File-Download-Once", "X-Requested-With", "X-File-Verification-Hash"},
 		ExposeHeaders:    []string{"Content-Length", "Content-Disposition"},

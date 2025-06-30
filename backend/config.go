@@ -40,7 +40,7 @@ type WebDAVConfig struct {
 }
 type Config struct {
 	ServerPort         string          `mapstructure:"ServerPort"`
-	CORSAllowedOrigins string          `mapstructure:"CORS_ALLOWED_ORIGINS"` // 注意这里的 mapstructure 标签
+	CORSAllowedOrigins string          `mapstructure:"CORS_ALLOWED_ORIGINS"`
 	MaxUploadSizeMB    int64           `mapstructure:"MaxUploadSizeMB"`
 	RateLimit          RateLimitConfig `mapstructure:"RateLimit"`
 	Database           DBConfig        `mapstructure:"Database"`
@@ -53,13 +53,12 @@ var AppConfig *Config
 
 // LoadConfig 现在会处理文件不存在的错误，并成功返回
 func LoadConfig(path string) error {
-	// --- 设置环境变量 ---
-	// 这一步要提前，以便 Unmarshal 能正确映射
+	// 1. 绑定环境变量 (需要提前)
 	viper.SetEnvPrefix("TEMPSHARE")
-	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
-	viper.AutomaticEnv() // 自动读取环境变量
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
+	viper.AutomaticEnv()
 
-	// --- 设置默认值 ---
+	// 2. 设置默认值
 	viper.SetDefault("ServerPort", "8080")
 	viper.SetDefault("CORS_ALLOWED_ORIGINS", "http://localhost:5173,https://localhost:5173")
 	viper.SetDefault("MaxUploadSizeMB", 1024)
@@ -74,20 +73,20 @@ func LoadConfig(path string) error {
 	viper.SetDefault("ClamdSocket", "")
 	viper.SetDefault("Initialized", false)
 
-	// --- 尝试读取配置文件 (可选) ---
+	// 3. 尝试读取配置文件 (这是可选的)
 	viper.SetConfigFile(path)
 	viper.SetConfigType("json")
 	if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
+			// 文件未找到，这是 Docker 环境下的预期行为，记录信息并继续
 			slog.Info("配置文件 config.json 未找到，将完全依赖环境变量和默认值。")
 		} else {
-			// 文件存在但格式错误等，这是严重问题
+			// 如果是其他错误 (例如 JSON 格式错误)，则这是一个严重错误，返回它
 			return err
 		}
 	}
 
-	// --- 将所有配置解析到结构体 ---
-	// Viper 会自动处理优先级: 环境变量 > 配置文件 > 默认值
+	// 4. 将所有配置源 (环境变量 > 配置文件 > 默认值) 解析到结构体中
 	AppConfig = &Config{}
 	if err := viper.Unmarshal(&AppConfig); err != nil {
 		return err // Viper 解析到结构体失败，这是严重错误
