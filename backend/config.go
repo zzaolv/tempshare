@@ -9,7 +9,6 @@ import (
 	"github.com/spf13/viper"
 )
 
-// ... 其他结构体定义保持不变 ...
 type RateLimitConfig struct {
 	Enabled         bool `mapstructure:"Enabled"`
 	Requests        int  `mapstructure:"Requests"`
@@ -39,13 +38,14 @@ type WebDAVConfig struct {
 	Password string `mapstructure:"Password"`
 }
 type Config struct {
-	ServerPort      string          `mapstructure:"ServerPort"`
-	MaxUploadSizeMB int64           `mapstructure:"MaxUploadSizeMB"`
-	RateLimit       RateLimitConfig `mapstructure:"RateLimit"`
-	Database        DBConfig        `mapstructure:"Database"`
-	Storage         StorageConfig   `mapstructure:"Storage"`
-	ClamdSocket     string          `mapstructure:"ClamdSocket"`
-	Initialized     bool            `mapstructure:"Initialized"`
+	ServerPort         string          `mapstructure:"ServerPort"`
+	CORSAllowedOrigins string          `mapstructure:"CORS_ALLOWED_ORIGINS"`
+	MaxUploadSizeMB    int64           `mapstructure:"MaxUploadSizeMB"`
+	RateLimit          RateLimitConfig `mapstructure:"RateLimit"`
+	Database           DBConfig        `mapstructure:"Database"`
+	Storage            StorageConfig   `mapstructure:"Storage"`
+	ClamdSocket        string          `mapstructure:"ClamdSocket"`
+	Initialized        bool            `mapstructure:"Initialized"`
 }
 
 var AppConfig *Config
@@ -57,6 +57,7 @@ func LoadConfig(path string) error {
 
 	// 设置默认值
 	viper.SetDefault("ServerPort", "8080")
+	viper.SetDefault("CORS_ALLOWED_ORIGINS", "http://localhost:5173,https://localhost:5173")
 	viper.SetDefault("MaxUploadSizeMB", 1024)
 	viper.SetDefault("RateLimit.Enabled", true)
 	viper.SetDefault("RateLimit.Requests", 30)
@@ -92,13 +93,21 @@ func LoadConfig(path string) error {
 		return err // Viper 解析到结构体失败，这是严重错误
 	}
 
-	// 再次从环境变量读取，以确保覆盖所有值
+	// 重新从 viper 获取最终确定的值，以确保环境变量正确覆盖
+	// 这一步至关重要，因为 Unmarshal 可能不会覆盖所有通过 Env 加载的值
 	AppConfig.Initialized = viper.GetBool("INITIALIZED")
+	AppConfig.ServerPort = viper.GetString("SERVERPORT")
+	AppConfig.CORSAllowedOrigins = viper.GetString("CORS_ALLOWED_ORIGINS")
+	AppConfig.Database.Type = viper.GetString("DATABASE_TYPE")
+	AppConfig.Database.DSN = viper.GetString("DATABASE_DSN")
+	AppConfig.Storage.Type = viper.GetString("STORAGE_TYPE")
+	AppConfig.Storage.LocalPath = viper.GetString("STORAGE_LOCALPATH")
+	// ... 可以为其他需要环境变量覆盖的 S3/WebDAV 字段添加类似逻辑 ...
 
 	slog.Info("配置加载完成",
-		slog.String("serverPort", viper.GetString("SERVERPORT")), // 从viper直接获取以反映最终值
-		slog.String("dbType", viper.GetString("DATABASE.TYPE")),
-		slog.String("storageType", viper.GetString("STORAGE.TYPE")),
+		slog.String("serverPort", AppConfig.ServerPort),
+		slog.String("dbType", AppConfig.Database.Type),
+		slog.String("storageType", AppConfig.Storage.Type),
 		slog.Bool("initialized", AppConfig.Initialized),
 	)
 

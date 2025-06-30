@@ -11,56 +11,58 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	"github.com/spf13/viper" // ✨ 导入 viper 以便直接使用
 )
 
 func main() {
 	InitLogger()
 
-	// ✨✨✨ 核心修复点 ✨✨✨
-	// LoadConfig 现在只在真正发生错误时才返回 err
+	// LoadConfig 现在会优雅地处理文件不存在的情况，
+	// 并且在真正遇到解析错误时才会返回 err。
 	if err := LoadConfig("config.json"); err != nil {
 		slog.Error("加载配置时发生严重错误，程序无法启动", "error", err)
 		os.Exit(1)
 	}
 
+	// 检查配置是否已初始化，这是启动服务的先决条件。
 	if !AppConfig.Initialized {
 		runInitializationGuide()
 		os.Exit(1)
 	}
 
-	// ... 后续代码与之前版本相同 ...
-
+	// 初始化存储后端
 	storage, err := NewFileStorage(AppConfig.Storage)
 	if err != nil {
 		slog.Error("存储后端初始化失败", "error", err)
 		os.Exit(1)
 	}
 
+	// 初始化数据库
 	db, err := ConnectDatabase(AppConfig.Database)
 	if err != nil {
 		slog.Error("数据库初始化失败", "error", err)
 		os.Exit(1)
 	}
 
-	// 直接从 viper 获取最终值，因为它综合了文件、环境变量和默认值
-	clamdSocket := viper.GetString("ClamdSocket")
-	clamdScanner, err := NewScanner(clamdSocket)
+	// ✨ 修改点: 直接从 AppConfig 读取 ClamdSocket 配置
+	clamdScanner, err := NewScanner(AppConfig.ClamdSocket)
 	if err != nil {
+		// NewScanner 内部已经记录了详细日志，这里只记录一个警告即可
 		slog.Warn("Clamd 扫描器初始化失败，文件扫描功能将不可用。", "error", err)
 	}
 
+	// 启动后台清理任务
 	go CleanupExpiredFilesTask(db, storage)
 
+	// 初始化 Gin 路由器
 	router := gin.Default()
-	router.SetTrustedProxies(nil)
+	router.SetTrustedProxies(nil) // 根据您的部署环境决定是否信任代理
 
-	allowedOriginsEnv := viper.GetString("CORS_ALLOWED_ORIGINS") // 从 viper 获取
+	// 配置 CORS (跨域资源共享)
+	// ✨ 修改点: 直接从 AppConfig 读取 CORS 配置
 	var allowedOrigins []string
+	allowedOriginsEnv := AppConfig.CORSAllowedOrigins
 	if allowedOriginsEnv != "" {
 		allowedOrigins = strings.Split(allowedOriginsEnv, ",")
-	} else {
-		allowedOrigins = []string{"http://localhost:5173", "https://localhost:5173"}
 	}
 	slog.Info("CORS Allowed Origins", "origins", allowedOrigins)
 
@@ -74,20 +76,25 @@ func main() {
 	}
 	router.Use(cors.New(corsConfig))
 
+	// 初始化 API 处理器
 	fileHandler := &FileHandler{
 		DB:      db,
 		Scanner: clamdScanner,
 		Storage: storage,
 	}
 
+	// 健康检查路由
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 
+	// API v1 路由组
 	apiV1 := router.Group("/api/v1")
 	{
+		// 配置速率限制
 		if AppConfig.RateLimit.Enabled {
 			limiter := NewIPRateLimiter(AppConfig.RateLimit.Requests, AppConfig.GetRateLimitDuration())
+			// 对上传和举报接口应用速率限制
 			uploadAndReportGroup := apiV1.Group("/")
 			uploadAndReportGroup.Use(limiter.RateLimitMiddleware())
 			{
@@ -101,18 +108,23 @@ func main() {
 			apiV1.POST("/report", fileHandler.HandleReport)
 		}
 
+		// 公共文件 API
 		apiV1.GET("/files/meta/:code", fileHandler.HandleGetFileMeta)
 		apiV1.GET("/files/public", fileHandler.HandleGetPublicFiles)
+
+		// 文件预览 API
 		apiV1.GET("/preview/:code", fileHandler.HandlePreviewFile)
 		apiV1.GET("/preview/data-uri/:code", fileHandler.HandlePreviewDataURI)
 	}
 
+	// 文件下载路由组 (支持加密文件的POST验证)
 	dataGroup := router.Group("/data/:code")
 	{
 		dataGroup.GET("", fileHandler.HandleDownloadFile)
 		dataGroup.POST("", fileHandler.HandleDownloadFile)
 	}
 
+	// 启动服务器
 	serverAddr := ":" + AppConfig.ServerPort
 	slog.Info("后端服务准备启动...", "address", "http://localhost"+serverAddr, "storage", AppConfig.Storage.Type, "database", AppConfig.Database.Type)
 
@@ -122,7 +134,7 @@ func main() {
 	}
 }
 
-// ... runInitializationGuide 函数保持不变 ...
+// runInitializationGuide 在配置未初始化时显示引导信息
 func runInitializationGuide() {
 	fmt.Println("--- 闪传驿站 | TempShare 未初始化 ---")
 	fmt.Println("检测到这是首次运行或配置尚未完成。")
