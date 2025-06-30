@@ -6,24 +6,27 @@ import fs from 'fs';
 import path from 'path';
 
 export default defineConfig(({ mode }) => {
+  // 加载环境变量
   const env = loadEnv(mode, process.cwd(), '');
   
   const config: UserConfig = {
     plugins: [react()],
+    // define 用于在客户端代码中替换环境变量，确保生产构建时 API URL 正确
     define: {
       'import.meta.env.VITE_DIRECT_API_BASE_URL': JSON.stringify(env.VITE_DIRECT_API_BASE_URL || '')
     },
     server: {
-      port: 5173, 
-      strictPort: true,
+      // ✨✨✨ 核心修复点: 确保代理目标是 HTTPS ✨✨✨
       proxy: { 
+        // 代理所有 /api 的请求到后端 HTTPS 服务
         '/api': {
-          target: 'https://localhost:8080',
-          changeOrigin: true,
-          secure: false, 
+          target: 'https://localhost:8080', // 必须是 HTTPS
+          changeOrigin: true, // 必须，否则 CORS 可能会出问题
+          secure: false,      // 必须，因为我们用的是自签名证书，告诉 Node.js 不要验证它
         },
+        // 代理所有 /data 的下载请求
         '/data': {
-          target: 'https://localhost:8080',
+          target: 'https://localhost:8080', // 同样是 HTTPS
           changeOrigin: true,
           secure: false, 
         }
@@ -31,11 +34,13 @@ export default defineConfig(({ mode }) => {
     }
   };
 
+  // 仅在开发模式下为 Vite 开发服务器启用 HTTPS
   if (mode === 'development') {
     if (!config.server) {
       config.server = {};
     }
     try {
+      // 尝试从后端目录读取证书文件
       const keyPath = path.resolve(__dirname, '../backend/key.pem');
       const certPath = path.resolve(__dirname, '../backend/cert.pem');
       
@@ -44,22 +49,18 @@ export default defineConfig(({ mode }) => {
           key: fs.readFileSync(keyPath),
           cert: fs.readFileSync(certPath),
         };
-        console.log("成功加载 SSL 证书，Vite 开发服务器将以 HTTPS 模式运行。");
+        console.log('Vite dev server is running in HTTPS mode.');
       } else {
-        throw new Error("证书文件未找到。");
+          throw new Error('SSL certificates not found.');
       }
     } catch (e) {
-      // ✨✨✨ 核心修复点 ✨✨✨
-      // 我们在这里对 'e' 的类型进行检查，确保它是一个 Error 对象。
-      let errorMessage = "一个未知的错误发生了。";
-      if (e instanceof Error) {
-        errorMessage = e.message;
+      console.warn('\nCould not find SSL certificates for Vite dev server. It will run in HTTP mode.');
+      console.warn('This will likely cause issues when connecting to the HTTPS backend.');
+      console.warn('➡️ To fix this, run `mkcert -install && mkcert localhost` in the `backend` directory.\n');
+      // 清除 https 配置，使其回退到 http
+      if (config.server) {
+        delete config.server.https;
       }
-      
-      console.warn('警告：无法加载 SSL 证书。Vite 将以 HTTP 模式运行，这可能导致功能异常。');
-      console.warn(`错误信息: ${errorMessage}`);
-      console.warn('要解决此问题，请进入项目的 `backend` 目录，然后运行以下命令：');
-      console.warn('`mkcert -install && mkcert localhost`');
     }
   }
 
