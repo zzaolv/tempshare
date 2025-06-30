@@ -14,13 +14,13 @@ export default defineConfig(({ mode }) => {
       'import.meta.env.VITE_DIRECT_API_BASE_URL': JSON.stringify(env.VITE_DIRECT_API_BASE_URL || '')
     },
     server: {
-      // ✨✨✨ 核心修复点 ✨✨✨
-      // 将代理目标从 http 修改为 https，以匹配我们刚刚修改的 Go 后端。
+      port: 5173, 
+      strictPort: true,
       proxy: { 
         '/api': {
           target: 'https://localhost:8080',
           changeOrigin: true,
-          secure: false, // `secure: false` 允许代理到自签名的证书，这在本地开发中很关键
+          secure: false, 
         },
         '/data': {
           target: 'https://localhost:8080',
@@ -31,19 +31,35 @@ export default defineConfig(({ mode }) => {
     }
   };
 
-  // 保持本地开发服务器的 HTTPS 配置不变，这是正确的
   if (mode === 'development') {
     if (!config.server) {
       config.server = {};
     }
     try {
-      config.server.https = {
-        key: fs.readFileSync(path.resolve(__dirname, '../backend/key.pem')),
-        cert: fs.readFileSync(path.resolve(__dirname, '../backend/cert.pem')),
-      };
+      const keyPath = path.resolve(__dirname, '../backend/key.pem');
+      const certPath = path.resolve(__dirname, '../backend/cert.pem');
+      
+      if (fs.existsSync(keyPath) && fs.existsSync(certPath)) {
+        config.server.https = {
+          key: fs.readFileSync(keyPath),
+          cert: fs.readFileSync(certPath),
+        };
+        console.log("成功加载 SSL 证书，Vite 开发服务器将以 HTTPS 模式运行。");
+      } else {
+        throw new Error("证书文件未找到。");
+      }
     } catch (e) {
-      console.warn('找不到用于开发服务器的SSL证书。将以 HTTP 模式运行。');
-      console.warn('要启用 HTTPS 开发, 请在 backend 文件夹下运行 `mkcert -install && mkcert localhost`。');
+      // ✨✨✨ 核心修复点 ✨✨✨
+      // 我们在这里对 'e' 的类型进行检查，确保它是一个 Error 对象。
+      let errorMessage = "一个未知的错误发生了。";
+      if (e instanceof Error) {
+        errorMessage = e.message;
+      }
+      
+      console.warn('警告：无法加载 SSL 证书。Vite 将以 HTTP 模式运行，这可能导致功能异常。');
+      console.warn(`错误信息: ${errorMessage}`);
+      console.warn('要解决此问题，请进入项目的 `backend` 目录，然后运行以下命令：');
+      console.warn('`mkcert -install && mkcert localhost`');
     }
   }
 

@@ -51,16 +51,17 @@ type Config struct {
 
 var AppConfig *Config
 
-// LoadConfig 现在会处理文件不存在的错误，并成功返回
+// LoadConfig 从文件、环境变量和默认值加载配置。
+// 它现在会返回 viper.ConfigFileNotFoundError，由调用者决定如何处理。
 func LoadConfig(path string) error {
-	// 1. 绑定环境变量 (需要提前)
+	// 1. 绑定环境变量
 	viper.SetEnvPrefix("TEMPSHARE")
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
 	viper.AutomaticEnv()
 
 	// 2. 设置默认值
 	viper.SetDefault("ServerPort", "8080")
-	viper.SetDefault("CORS_ALLOWED_ORIGINS", "http://localhost:5173,https://localhost:5173")
+	viper.SetDefault("CORS_ALLOWED_ORIGINS", "https://localhost:5173")
 	viper.SetDefault("MaxUploadSizeMB", 1024)
 	viper.SetDefault("RateLimit.Enabled", true)
 	viper.SetDefault("RateLimit.Requests", 30)
@@ -73,34 +74,25 @@ func LoadConfig(path string) error {
 	viper.SetDefault("ClamdSocket", "")
 	viper.SetDefault("Initialized", false)
 
-	// 3. 尝试读取配置文件 (这是可选的)
+	// 3. 尝试读取配置文件
 	viper.SetConfigFile(path)
 	viper.SetConfigType("json")
 	if err := viper.ReadInConfig(); err != nil {
-		// ✨✨✨ 核心修复点 ✨✨✨
-		// 我们检查错误类型。如果错误是 "ConfigFileNotFoundError"，
-		// 这在 Docker 环境下是正常行为，所以我们只记录一条信息，然后继续。
-		// 如果是其他错误 (例如 JSON 格式错误)，那才是真正的严重错误。
-		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
-			slog.Info("配置文件 config.json 未找到，将完全依赖环境变量和默认值。")
-		} else {
-			// 配置文件存在但格式错误等问题
-			return err
-		}
+		// 直接返回错误，让调用者(main.go)来判断错误类型
+		return err
 	}
 
-	// 4. 将所有配置源 (环境变量 > 配置文件 > 默认值) 解析到结构体中
+	// 4. 解析配置到结构体
 	AppConfig = &Config{}
 	if err := viper.Unmarshal(&AppConfig); err != nil {
-		return err // Viper 解析到结构体失败，这是严重错误
+		return err
 	}
 
-	slog.Info("配置加载完成",
+	slog.Info("配置加载成功",
+		slog.String("source", "config.json"),
 		slog.String("serverPort", AppConfig.ServerPort),
 		slog.String("dbType", AppConfig.Database.Type),
 		slog.String("storageType", AppConfig.Storage.Type),
-		slog.Bool("initialized", AppConfig.Initialized),
-		slog.String("allowedOrigins", AppConfig.CORSAllowedOrigins),
 	)
 
 	return nil

@@ -2,6 +2,7 @@
 package main
 
 import (
+	"errors" // ✨ 导入 errors 包
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,23 +12,47 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/spf13/viper" // ✨ 导入 viper 包
 )
 
 func main() {
 	InitLogger()
 
-	// ✨✨✨ 修复点 1: 调整对 LoadConfig 的调用逻辑 ✨✨✨
-	// LoadConfig 现在只会在遇到真正问题时（如JSON格式错误）才返回错误。
-	// 文件找不到的错误已在内部处理。
+	// ✨✨✨ 最终修复点: 对 LoadConfig 的错误进行精确判断 ✨✨✨
 	if err := LoadConfig("config.json"); err != nil {
-		slog.Error("加载配置时发生严重错误，程序无法启动", "error", err)
-		os.Exit(1)
+		var configFileNotFoundError viper.ConfigFileNotFoundError
+		// 使用 errors.As 判断错误的具体类型
+		// 如果错误确实是 "配置文件未找到"，我们就忽略它，因为这是 Docker 环境的预期行为。
+		if errors.As(err, &configFileNotFoundError) {
+			slog.Info("config.json 未找到，将仅使用环境变量和默认值进行配置。")
+			// 即使文件不存在，也需要执行一次 Unmarshal 来应用环境变量和默认值。
+			// 这里我们创建一个临时的空的 Viper 实例来做这件事。
+			v := viper.New()
+			v.SetEnvPrefix("TEMPSHARE")
+			v.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
+			v.AutomaticEnv()
+			if err := v.Unmarshal(&AppConfig); err != nil {
+				slog.Error("从环境变量解析配置失败", "error", err)
+				os.Exit(1)
+			}
+		} else {
+			// 如果是其他错误 (比如 JSON 格式错误)，这就是一个严重问题，必须退出。
+			slog.Error("加载 config.json 时发生严重错误，程序无法启动", "error", err)
+			os.Exit(1)
+		}
 	}
 
-	if !AppConfig.Initialized {
+	// 检查 AppConfig 是否已初始化
+	if AppConfig == nil || !AppConfig.Initialized {
+		// 如果 AppConfig 仍然是 nil，说明 LoadConfig 和后续的 Unmarshal 都没成功
+		if AppConfig == nil {
+			AppConfig = &Config{} // 创建一个空实例以防 panic
+		}
 		runInitializationGuide()
 		os.Exit(1)
 	}
+
+	// --- 后续代码保持不变 ---
 
 	storage, err := NewFileStorage(AppConfig.Storage)
 	if err != nil {
@@ -109,15 +134,13 @@ func main() {
 	serverAddr := ":" + AppConfig.ServerPort
 	slog.Info("后端服务准备启动...", "address", "https://localhost"+serverAddr, "storage", AppConfig.Storage.Type, "database", AppConfig.Database.Type)
 
-	// ✨✨✨ 修复点 2: 使用 RunTLS 启动 HTTPS 服务器 ✨✨✨
-	// 这解决了本地开发时的 net::ERR_H2_OR_QUIC_REQUIRED 问题。
-	// 它会使用你已经提供的 cert.pem 和 key.pem 文件。
-	// 注意：在生产 Docker 容器中，我们通常不在这里做 TLS，而是在反向代理层（如 Nginx Proxy Manager, Traefik）处理。
-	// 但对于本地开发，这是最简单直接的方案。
+	// ✨✨✨ 修复本地开发 HTTPS 问题的关键 ✨✨✨
+	// 在本地开发环境中，我们启动一个 TLS 服务器。
+	// 这解决了 net::ERR_H2_OR_QUIC_REQUIRED 问题。
 	if err := router.RunTLS(serverAddr, "cert.pem", "key.pem"); err != nil {
 		slog.Error("无法启动 HTTPS 服务器", "error", err)
 		slog.Warn("请确保 backend 目录下存在 cert.pem 和 key.pem 文件。")
-		slog.Warn("如果你没有这些文件，可以通过在 backend 目录运行 `mkcert -install && mkcert localhost` 来生成它们。")
+		slog.Warn("可以通过运行 'mkcert -install && mkcert localhost' 来生成它们。")
 		os.Exit(1)
 	}
 }
@@ -131,7 +154,7 @@ func runInitializationGuide() {
 	fmt.Println("# 基础设置")
 	fmt.Println("TEMPSHARE_INITIALIZED=true                 # 完成配置后，设置为 true 来启动服务")
 	fmt.Println("TEMPSHARE_SERVERPORT=8080                    # 应用监听的端口")
-	fmt.Println("TEMPSHARE_CORS_ALLOWED_ORIGINS=https://your-frontend.com # 允许的前端域名, 多个用逗号隔开")
+	fmt.Println("TEMPSHARE_CORS_ALLOWED_ORIGINS=https://localhost:5173 # 允许的前端域名, 多个用逗号隔开")
 
 	fmt.Println("\n# 数据库配置 (选择一种)")
 	fmt.Println("## SQLite (默认)")
