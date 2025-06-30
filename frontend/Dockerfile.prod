@@ -5,6 +5,12 @@ FROM node:20-alpine AS builder
 # 设置工作目录
 WORKDIR /app
 
+# 声明一个构建参数，可以从 docker-compose.yml 传递进来
+ARG VITE_DIRECT_API_BASE_URL=""
+
+# 将构建参数设置为环境变量，以便 vite.config.ts 可以读取
+ENV VITE_DIRECT_API_BASE_URL=$VITE_DIRECT_API_BASE_URL
+
 # 复制 package.json 和 lock 文件
 COPY package*.json ./
 
@@ -14,10 +20,8 @@ RUN npm install
 # 复制所有前端代码
 COPY . .
 
-# 修改 Vite 配置以指向容器内的后端服务
-# VITE_DIRECT_API_BASE_URL 环境变量将在构建时被注入
-ARG VITE_DIRECT_API_BASE_URL=/
-RUN sed -i "s|https://localhost:8080|$VITE_DIRECT_API_BASE_URL|g" src/lib/api.ts
+# ✨✨✨ 修复点: 移除 sed 命令 ✨✨✨
+# URL 的替换现在由 Vite 的 define 配置在构建时自动完成
 
 # 构建生产版本的静态文件
 RUN npm run build
