@@ -5,19 +5,23 @@ FROM golang:1.24-alpine AS builder
 # 设置工作目录
 WORKDIR /app
 
-# 复制 go.mod 和 go.sum 文件并下载依赖
-# 这一步是单独的，以便利用 Docker 的层缓存
+# 1. 单独复制 go.mod 和 go.sum
 COPY go.mod go.sum ./
-RUN go mod download
 
-# 复制所有源代码
+# 2. 使用 Go modules 的缓存来下载依赖项
+# 这比 `go mod download` 更高效，因为它只在 go.mod 变化时才重新下载
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
+
+# 3. 复制所有源代码到容器中
 COPY . .
 
-# 构建应用。
+# 4. 构建应用，并利用 Go 的构建缓存
 # -o /app/tempshare 指定输出文件名为 tempshare
 # CGO_ENABLED=0 禁用 CGO，构建静态链接的二进制文件
 # -ldflags "-s -w" 去除调试信息，减小最终二进制文件的大小
-RUN CGO_ENABLED=0 GOOS=linux go build -o /app/tempshare -ldflags="-s -w" .
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux go build -o /app/tempshare -ldflags="-s -w" .
 
 # --- Stage 2: Final Image ---
 # 使用一个非常小的基础镜像 (alpine) 来构建最终镜像

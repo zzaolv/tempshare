@@ -2,6 +2,7 @@
 package main
 
 import (
+	"errors" // ✨ 导入 errors 包
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,21 +12,29 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/spf13/viper" // ✨ 导入 viper 包
 )
 
 func main() {
 	InitLogger()
 
-	// LoadConfig 现在只在真正发生错误时才返回 err
+	// ✨✨✨ 最终修复点: 对 LoadConfig 的错误进行精确判断 ✨✨✨
 	if err := LoadConfig("config.json"); err != nil {
-		slog.Error("加载配置时发生严重错误，程序无法启动", "error", err)
-		os.Exit(1)
+		// 只有在错误不是 "配置文件未找到" 时，才认为是严重错误
+		var configFileNotFoundError viper.ConfigFileNotFoundError
+		if !errors.As(err, &configFileNotFoundError) {
+			slog.Error("加载配置时发生严重错误，程序无法启动", "error", err)
+			os.Exit(1)
+		}
+		// 如果是 "文件未找到" 错误，则忽略，因为我们在 LoadConfig 中已经打印了日志
 	}
 
 	if !AppConfig.Initialized {
 		runInitializationGuide()
 		os.Exit(1)
 	}
+
+	// --- 后续代码保持不变 ---
 
 	storage, err := NewFileStorage(AppConfig.Storage)
 	if err != nil {
@@ -49,7 +58,6 @@ func main() {
 	router := gin.Default()
 	router.SetTrustedProxies(nil)
 
-	// ✨ 核心修改点：直接从 AppConfig 读取配置，并增加健壮性检查
 	var allowedOrigins []string
 	if AppConfig.CORSAllowedOrigins != "" {
 		allowedOrigins = strings.Split(AppConfig.CORSAllowedOrigins, ",")
@@ -57,7 +65,7 @@ func main() {
 	slog.Info("CORS Allowed Origins", "origins", allowedOrigins)
 
 	corsConfig := cors.Config{
-		AllowOrigins:     allowedOrigins, // 如果为空，CORS中间件会拒绝所有跨域请求
+		AllowOrigins:     allowedOrigins,
 		AllowMethods:     []string{"GET", "POST", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "X-File-Name", "X-File-Original-Size", "X-File-Encrypted", "X-File-Salt", "X-File-Expires-In", "X-File-Download-Once", "X-Requested-With", "X-File-Verification-Hash"},
 		ExposeHeaders:    []string{"Content-Length", "Content-Disposition"},
