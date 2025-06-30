@@ -2,6 +2,7 @@
 package main
 
 import (
+	"crypto/tls" // ✨ 修复点: 导入 tls 包
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,14 +12,11 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	// 我们不再需要在这里导入 viper 和 errors，因为 LoadConfig 已经处理了所有逻辑
 )
 
 func main() {
 	InitLogger()
 
-	// ✨✨✨ 核心修复点 1: 简化配置加载调用 ✨✨✨
-	// 新的 LoadConfig 函数在文件不存在时会返回 nil，所以我们只需检查真正的错误。
 	if err := LoadConfig("config.json"); err != nil {
 		slog.Error("加载配置时发生严重错误，程序无法启动", "error", err)
 		os.Exit(1)
@@ -29,7 +27,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// ... 后续的初始化代码保持不变 ...
 	storage, err := NewFileStorage(AppConfig.Storage)
 	if err != nil {
 		slog.Error("存储后端初始化失败", "error", err)
@@ -47,9 +44,7 @@ func main() {
 	go CleanupExpiredFilesTask(db, storage)
 
 	// --- Gin 路由器设置 ---
-	// 默认使用 DebugMode，这在本地开发时更有用
 	gin.SetMode(gin.DebugMode)
-	// 如果在生产环境（例如 Docker），可以设置 GIN_MODE=release
 	if os.Getenv("GIN_MODE") == "release" {
 		gin.SetMode(gin.ReleaseMode)
 	}
@@ -79,10 +74,8 @@ func main() {
 		Storage: storage,
 	}
 
-	// ... 路由定义保持不变 ...
 	router.GET("/health", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"status": "ok"}) })
 	apiV1 := router.Group("/api/v1")
-	// ... (省略重复的路由定义代码)
 	{
 		if AppConfig.RateLimit.Enabled {
 			limiter := NewIPRateLimiter(AppConfig.RateLimit.Requests, AppConfig.GetRateLimitDuration())
@@ -111,24 +104,32 @@ func main() {
 
 	serverAddr := ":" + AppConfig.ServerPort
 
-	// ✨✨✨ 核心修复点 2: 采用更可靠的启动逻辑 ✨✨✨
-	// 我们通过检查证书文件是否存在来判断是否应该启动 HTTPS 服务器。
-	// 这对于区分本地开发和 Docker 容器环境非常有效。
+	// ✨✨✨ 核心修复点: 区分本地开发 (HTTPS) 和生产 (HTTP) 启动方式 ✨✨✨
 	certFile := "cert.pem"
 	keyFile := "key.pem"
 	if _, err := os.Stat(certFile); err == nil {
 		if _, err := os.Stat(keyFile); err == nil {
-			// 证书和密钥文件都存在，启动 HTTPS 服务器 (用于本地开发)
-			slog.Info("检测到 cert.pem 和 key.pem，启动 HTTPS 服务器...", "address", "https://localhost"+serverAddr)
-			if err := router.RunTLS(serverAddr, certFile, keyFile); err != nil {
+			// 证书文件存在，为本地开发启动 HTTPS 服务器
+			// 为解决 Vite 代理问题，我们在此处禁用 HTTP/2，强制使用 HTTP/1.1
+			slog.Info("检测到 cert.pem 和 key.pem，为本地开发启动禁用了 HTTP/2 的 HTTPS 服务器...", "address", "https://localhost"+serverAddr)
+
+			srv := &http.Server{
+				Addr:    serverAddr,
+				Handler: router,
+				TLSConfig: &tls.Config{
+					NextProtos: []string{"http/1.1"}, // 强制 HTTP/1.1 协议
+				},
+			}
+
+			if err := srv.ListenAndServeTLS(certFile, keyFile); err != nil {
 				slog.Error("无法启动 HTTPS 服务器", "error", err)
 				os.Exit(1)
 			}
-			return // 确保程序在这里结束
+			return
 		}
 	}
 
-	// 如果证书文件不存在，或者检查出错，则启动标准的 HTTP 服务器 (用于 Docker 或其他生产环境)
+	// 证书文件不存在，启动标准的 HTTP 服务器 (用于 Docker 或其他生产环境)
 	slog.Info("未找到证书文件，启动 HTTP 服务器...", "address", "http://localhost"+serverAddr)
 	if err := router.Run(serverAddr); err != nil {
 		slog.Error("无法启动 HTTP 服务器", "error", err)
@@ -136,9 +137,7 @@ func main() {
 	}
 }
 
-// runInitializationGuide 函数保持不变
 func runInitializationGuide() {
-	// ... (函数内容不变)
 	fmt.Println("--- 闪传驿站 | TempShare 未初始化 ---")
 	fmt.Println("检测到这是首次运行或配置尚未完成。")
 	fmt.Println("\n请通过环境变量进行配置。创建一个 `.env` 文件并设置以下变量：")
@@ -147,17 +146,14 @@ func runInitializationGuide() {
 	fmt.Println("TEMPSHARE_INITIALIZED=true                 # 完成配置后，设置为 true 来启动服务")
 	fmt.Println("TEMPSHARE_SERVERPORT=8080                    # 应用监听的端口")
 	fmt.Println("TEMPSHARE_CORS_ALLOWED_ORIGINS=https://your-frontend.com # 允许的前端域名, 多个用逗号隔开")
-
 	fmt.Println("\n# 数据库配置 (选择一种)")
 	fmt.Println("## SQLite (默认)")
 	fmt.Println("TEMPSHARE_DATABASE_TYPE=sqlite")
 	fmt.Println("TEMPSHARE_DATABASE_DSN=data/tempshare.db   # 推荐放在持久化卷中")
-
 	fmt.Println("\n# 存储配置 (选择一种)")
 	fmt.Println("## 本地存储 (默认)")
 	fmt.Println("TEMPSHARE_STORAGE_TYPE=local")
 	fmt.Println("TEMPSHARE_STORAGE_LOCALPATH=data/files     # 推荐放在持久化卷中")
-
 	fmt.Println("\n# (可选) ... 其他配置项 ...")
 	fmt.Println("-----------------------------------------------------------------")
 	fmt.Println("\n配置完成后，请确保 TEMPSHARE_INITIALIZED=true，然后重新启动服务。")

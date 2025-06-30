@@ -1,6 +1,11 @@
+# backend/Dockerfile
+
 # --- Stage 1: Build ---
 # 使用官方的 Go 镜像作为构建环境
 FROM golang:1.24-alpine AS builder
+
+# ✨ 修复点: 为 SQLite 安装 C 语言构建工具链 (CGO 依赖)
+RUN apk add --no-cache build-base
 
 # 设置工作目录
 WORKDIR /app
@@ -18,10 +23,10 @@ COPY . .
 
 # 4. 构建应用，并利用 Go 的构建缓存
 # -o /app/tempshare 指定输出文件名为 tempshare
-# CGO_ENABLED=0 禁用 CGO，构建静态链接的二进制文件
+# ✨ 修复点: 移除 CGO_ENABLED=0 来启用 CGO 编译, 这是 SQLite 驱动所必需的
 # -ldflags "-s -w" 去除调试信息，减小最终二进制文件的大小
 RUN --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=linux go build -o /app/tempshare -ldflags="-s -w" .
+    GOOS=linux go build -o /app/tempshare -ldflags="-s -w" .
 
 # --- Stage 2: Final Image ---
 # 使用一个非常小的基础镜像 (alpine) 来构建最终镜像
