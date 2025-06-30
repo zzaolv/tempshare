@@ -2,39 +2,35 @@
 package main
 
 import (
-	"errors" // ✨ 导入 errors 包
+	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	"github.com/spf13/viper" // ✨ 导入 viper 包
 )
 
 func main() {
 	InitLogger()
 
-	// ✨✨✨ 最终修复点: 对 LoadConfig 的错误进行精确判断 ✨✨✨
+	// ✨✨✨ 核心修复点: 对 LoadConfig 的错误进行精确判断 ✨✨✨
+	// 在Docker中，我们不期望 config.json 存在，所以只在出现其他解析错误时才退出。
 	if err := LoadConfig("config.json"); err != nil {
-		// 只有在错误不是 "配置文件未找到" 时，才认为是严重错误
-		var configFileNotFoundError viper.ConfigFileNotFoundError
-		if !errors.As(err, &configFileNotFoundError) {
-			slog.Error("加载配置时发生严重错误，程序无法启动", "error", err)
-			os.Exit(1)
-		}
-		// 如果是 "文件未找到" 错误，则忽略，因为我们在 LoadConfig 中已经打印了日志
+		slog.Error("加载配置时发生严重错误，程序无法启动", "error", err)
+		os.Exit(1)
 	}
 
 	if !AppConfig.Initialized {
 		runInitializationGuide()
 		os.Exit(1)
 	}
-
-	// --- 后续代码保持不变 ---
 
 	storage, err := NewFileStorage(AppConfig.Storage)
 	if err != nil {
@@ -55,6 +51,10 @@ func main() {
 
 	go CleanupExpiredFilesTask(db, storage)
 
+	// 在非生产模式下启用 Gin 的 Debug 模式
+	if gin.Mode() != gin.ReleaseMode {
+		gin.SetMode(gin.DebugMode)
+	}
 	router := gin.Default()
 	router.SetTrustedProxies(nil)
 
@@ -114,15 +114,50 @@ func main() {
 	}
 
 	serverAddr := ":" + AppConfig.ServerPort
-	slog.Info("后端服务准备启动...", "address", "http://localhost"+serverAddr, "storage", AppConfig.Storage.Type, "database", AppConfig.Database.Type)
+	srv := &http.Server{
+		Addr:    serverAddr,
+		Handler: router,
+	}
 
-	if err := router.Run(serverAddr); err != nil {
-		slog.Error("无法启动 HTTP 服务器", "error", err)
+	// 启动服务器的 goroutine
+	go func() {
+		slog.Info("后端服务准备启动...", "address", "https://localhost"+serverAddr, "storage", AppConfig.Storage.Type, "database", AppConfig.Database.Type)
+
+		// ✨✨✨ 核心修复点: 启动 HTTPS 服务器以解决本地开发问题 ✨✨✨
+		// Docker 生产环境通常由上游反向代理处理 TLS，所以这种方式主要用于开发。
+		// 在生产中，我们会运行不带TLS的 `srv.ListenAndServe()`。
+		// 可以通过环境变量来控制是启动 HTTP 还是 HTTPS。
+		if _, err := os.Stat("cert.pem"); err == nil {
+			slog.Info("检测到 cert.pem, 启动 HTTPS 服务器...")
+			if err := srv.ListenAndServeTLS("cert.pem", "key.pem"); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Error("无法启动 HTTPS 服务器", "error", err)
+				os.Exit(1)
+			}
+		} else {
+			slog.Info("未检测到 cert.pem, 启动 HTTP 服务器...")
+			if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Error("无法启动 HTTP 服务器", "error", err)
+				os.Exit(1)
+			}
+		}
+	}()
+
+	// 等待中断信号以优雅地关闭服务器（5秒超时）
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+	slog.Info("正在关闭服务器...")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		slog.Error("服务器关闭时出错", "error", err)
 		os.Exit(1)
 	}
+	slog.Info("服务器已优雅关闭")
 }
 
-// ... runInitializationGuide 函数保持不变 ...
+// runInitializationGuide 函数保持不变
 func runInitializationGuide() {
 	fmt.Println("--- 闪传驿站 | TempShare 未初始化 ---")
 	fmt.Println("检测到这是首次运行或配置尚未完成。")
@@ -131,7 +166,7 @@ func runInitializationGuide() {
 	fmt.Println("# 基础设置")
 	fmt.Println("TEMPSHARE_INITIALIZED=true                 # 完成配置后，设置为 true 来启动服务")
 	fmt.Println("TEMPSHARE_SERVERPORT=8080                    # 应用监听的端口")
-	fmt.Println("TEMPSHARE_CORS_ALLOWED_ORIGINS=https://your-frontend.com # 允许的前端域名, 多个用逗号隔开")
+	fmt.Println("TEMPSHARE_CORS_ALLOWED_ORIGINS=https://your-frontend.com,https://localhost:5173 # 允许的前端域名, 多个用逗号隔开")
 
 	fmt.Println("\n# 数据库配置 (选择一种)")
 	fmt.Println("## SQLite (默认)")

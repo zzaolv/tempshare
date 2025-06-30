@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net/http" // 引入 net/http 以便使用 http.StatusUnauthorized
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,7 +22,7 @@ import (
 	"gorm.io/gorm"
 )
 
-// FileStorage interface (no change)
+// FileStorage 定义了所有存储后端必须实现的接口
 type FileStorage interface {
 	Save(key string, reader io.Reader) (int64, error)
 	Retrieve(key string) (io.ReadCloser, error)
@@ -30,7 +30,7 @@ type FileStorage interface {
 	Exists(key string) bool
 }
 
-// --- Local Storage Implementation --- (no change)
+// --- Local Storage Implementation ---
 type LocalStorage struct{ basePath string }
 
 func NewLocalStorage(config StorageConfig) (*LocalStorage, error) {
@@ -72,7 +72,7 @@ func (l *LocalStorage) Exists(key string) bool {
 	return !os.IsNotExist(err)
 }
 
-// --- S3 Storage Implementation --- (no change)
+// --- S3 Storage Implementation ---
 type S3Storage struct {
 	client *s3.Client
 	bucket string
@@ -141,8 +141,7 @@ func (s *S3Storage) Exists(key string) bool {
 	return err == nil
 }
 
-// --- WebDAV Storage Implementation (Final Correction) ---
-
+// --- WebDAV Storage Implementation ---
 type WebDAVStorage struct {
 	client *gowebdav.Client
 }
@@ -150,14 +149,12 @@ type WebDAVStorage struct {
 func NewWebDAVStorage(config StorageConfig) (*WebDAVStorage, error) {
 	client := gowebdav.NewClient(config.WebDAV.URL, config.WebDAV.Username, config.WebDAV.Password)
 
-	// ✨✨✨ 最终修复点: 不再检查具体的 HTTPError，而是检查错误的字符串内容或使用 os.IsNotExist ✨✨✨
-	if _, err := client.Stat("/"); err != nil {
-		// gowebdav 在认证失败时会返回包含 "401" 的错误信息
+	// ✨ 修复点: 检查连接和认证
+	if err := client.Connect(); err != nil {
 		if strings.Contains(err.Error(), fmt.Sprintf("%d", http.StatusUnauthorized)) {
 			return nil, fmt.Errorf("WebDAV 认证失败 (401 Unauthorized): 请检查用户名和密码: %w", err)
 		}
-		// 对于其他连接错误，直接返回
-		return nil, fmt.Errorf("WebDAV 服务器连接或根目录检查失败 at %s: %w", config.WebDAV.URL, err)
+		return nil, fmt.Errorf("WebDAV 服务器连接失败 at %s: %w", config.WebDAV.URL, err)
 	}
 
 	slog.Info("使用 WebDAV 存储", "url", config.WebDAV.URL)
@@ -181,7 +178,7 @@ func (w *WebDAVStorage) Save(key string, reader io.Reader) (int64, error) {
 func (w *WebDAVStorage) Retrieve(key string) (io.ReadCloser, error) {
 	stream, err := w.client.ReadStream(key)
 	if err != nil {
-		// ✨✨✨ 最终修复点: 使用 os.IsNotExist 进行判断 ✨✨✨
+		// ✨ 修复点: gowebdav 在文件不存在时会返回符合 os.IsNotExist 的错误
 		if os.IsNotExist(err) {
 			return nil, gorm.ErrRecordNotFound
 		}
@@ -193,7 +190,7 @@ func (w *WebDAVStorage) Retrieve(key string) (io.ReadCloser, error) {
 func (w *WebDAVStorage) Delete(key string) error {
 	err := w.client.Remove(key)
 	if err != nil {
-		// ✨✨✨ 最终修复点: 使用 os.IsNotExist 进行判断 ✨✨✨
+		// ✨ 修复点: 同样使用 os.IsNotExist 判断
 		if os.IsNotExist(err) {
 			return nil // 文件本就不存在，任务完成
 		}
@@ -207,8 +204,7 @@ func (w *WebDAVStorage) Exists(key string) bool {
 	return err == nil
 }
 
-// --- Factory Function --- (no change)
-
+// --- Factory Function ---
 func NewFileStorage(config StorageConfig) (FileStorage, error) {
 	switch strings.ToLower(config.Type) {
 	case "local":

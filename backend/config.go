@@ -2,6 +2,7 @@
 package main
 
 import (
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -58,9 +59,9 @@ func LoadConfig(path string) error {
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
 	viper.AutomaticEnv()
 
-	// 2. 设置默认值
+	// 2. 设置默认值 (这些值将被配置文件或环境变量覆盖)
 	viper.SetDefault("ServerPort", "8080")
-	viper.SetDefault("CORS_ALLOWED_ORIGINS", "http://localhost:5173,https://localhost:5173")
+	viper.SetDefault("CORS_ALLOWED_ORIGINS", "https://localhost:5173")
 	viper.SetDefault("MaxUploadSizeMB", 1024)
 	viper.SetDefault("RateLimit.Enabled", true)
 	viper.SetDefault("RateLimit.Requests", 30)
@@ -74,15 +75,19 @@ func LoadConfig(path string) error {
 	viper.SetDefault("Initialized", false)
 
 	// 3. 尝试读取配置文件 (这是可选的)
-	viper.SetConfigFile(path)
-	viper.SetConfigType("json")
-	if err := viper.ReadInConfig(); err != nil {
-		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
-			// 文件未找到，这是 Docker 环境下的预期行为，记录信息并继续
-			slog.Info("配置文件 config.json 未找到，将完全依赖环境变量和默认值。")
+	if path != "" {
+		viper.SetConfigFile(path)
+		viper.SetConfigType("json")
+		if err := viper.ReadInConfig(); err != nil {
+			if _, ok := err.(viper.ConfigFileNotFoundError); ok {
+				// 文件未找到，这是 Docker 环境下的预期行为，记录信息并继续
+				slog.Info("配置文件未找到，将完全依赖环境变量和默认值。")
+			} else {
+				// 如果是其他错误 (例如 JSON 格式错误)，则这是一个严重错误，返回它
+				return fmt.Errorf("解析配置文件 '%s' 失败: %w", path, err)
+			}
 		} else {
-			// 如果是其他错误 (例如 JSON 格式错误)，则这是一个严重错误，返回它
-			return err
+			slog.Info("已成功从配置文件加载配置", "path", path)
 		}
 	}
 
@@ -90,6 +95,16 @@ func LoadConfig(path string) error {
 	AppConfig = &Config{}
 	if err := viper.Unmarshal(&AppConfig); err != nil {
 		return err // Viper 解析到结构体失败，这是严重错误
+	}
+
+	// 绑定环境变量到具体字段，确保环境变量能覆盖所有设置
+	// Viper 的 Unmarshal 优先级是：环境变量 > 配置文件 > 默认值
+	// 但为了确保结构体字段名和环境变量名能精确对应，可以显式绑定
+	bindEnvVars()
+
+	// 再次 Unmarshal 以确保显式绑定的环境变量生效
+	if err := viper.Unmarshal(&AppConfig); err != nil {
+		return err
 	}
 
 	slog.Info("配置加载完成",
@@ -101,6 +116,27 @@ func LoadConfig(path string) error {
 	)
 
 	return nil
+}
+
+// bindEnvVars 显式地将环境变量绑定到配置结构体的字段
+func bindEnvVars() {
+	viper.BindEnv("ServerPort", "TEMPSHARE_SERVERPORT")
+	viper.BindEnv("CORS_ALLOWED_ORIGINS", "TEMPSHARE_CORS_ALLOWED_ORIGINS")
+	viper.BindEnv("Initialized", "TEMPSHARE_INITIALIZED")
+	viper.BindEnv("Database.Type", "TEMPSHARE_DATABASE_TYPE")
+	viper.BindEnv("Database.DSN", "TEMPSHARE_DATABASE_DSN")
+	viper.BindEnv("Storage.Type", "TEMPSHARE_STORAGE_TYPE")
+	viper.BindEnv("Storage.LocalPath", "TEMPSHARE_STORAGE_LOCALPATH")
+	viper.BindEnv("Storage.S3.Endpoint", "TEMPSHARE_STORAGE_S3_ENDPOINT")
+	viper.BindEnv("Storage.S3.Region", "TEMPSHARE_STORAGE_S3_REGION")
+	viper.BindEnv("Storage.S3.Bucket", "TEMPSHARE_STORAGE_S3_BUCKET")
+	viper.BindEnv("Storage.S3.UsePathStyle", "TEMPSHARE_STORAGE_S3_USEPATHSTYLE")
+	viper.BindEnv("Storage.S3.AccessKeyID", "TEMPSHARE_STORAGE_S3_ACCESSKEYID")
+	viper.BindEnv("Storage.S3.SecretAccessKey", "TEMPSHARE_STORAGE_S3_SECRETACCESSKEY")
+	viper.BindEnv("Storage.WebDAV.URL", "TEMPSHARE_STORAGE_WEBDAV_URL")
+	viper.BindEnv("Storage.WebDAV.Username", "TEMPSHARE_STORAGE_WEBDAV_USERNAME")
+	viper.BindEnv("Storage.WebDAV.Password", "TEMPSHARE_STORAGE_WEBDAV_PASSWORD")
+	viper.BindEnv("ClamdSocket", "TEMPSHARE_CLAMDSOCKET")
 }
 
 func (c *Config) GetRateLimitDuration() time.Duration {
