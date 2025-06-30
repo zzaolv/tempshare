@@ -9,7 +9,6 @@ import (
 	"github.com/spf13/viper"
 )
 
-// ... 其他结构体定义不变 ...
 type RateLimitConfig struct {
 	Enabled         bool `mapstructure:"Enabled"`
 	Requests        int  `mapstructure:"Requests"`
@@ -43,21 +42,18 @@ type WebDAVConfig struct {
 	Password string `mapstructure:"Password"`
 }
 
-// Config 对应整个应用的配置结构
 type Config struct {
 	ServerPort      string          `mapstructure:"ServerPort"`
 	MaxUploadSizeMB int64           `mapstructure:"MaxUploadSizeMB"`
 	RateLimit       RateLimitConfig `mapstructure:"RateLimit"`
 	Database        DBConfig        `mapstructure:"Database"`
 	Storage         StorageConfig   `mapstructure:"Storage"`
-	// ✨✨✨ 修复点: 重新添加 ClamdSocket 字段 ✨✨✨
-	ClamdSocket string `mapstructure:"ClamdSocket"`
-	Initialized bool   `mapstructure:"Initialized"`
+	ClamdSocket     string          `mapstructure:"ClamdSocket"`
+	Initialized     bool            `mapstructure:"Initialized"`
 }
 
 var AppConfig *Config
 
-// LoadConfig 函数 (完全替换以包含新的默认值)
 func LoadConfig(path string) error {
 	viper.SetConfigFile(path)
 	viper.SetConfigType("json")
@@ -69,18 +65,20 @@ func LoadConfig(path string) error {
 	viper.SetDefault("RateLimit.Requests", 30)
 	viper.SetDefault("RateLimit.DurationMinutes", 10)
 	viper.SetDefault("Database.Type", "sqlite")
-	viper.SetDefault("Database.DSN", "tempshare.db")
+	viper.SetDefault("Database.DSN", "data/tempshare.db") // 确保路径与 docker-compose volume 对应
 	viper.SetDefault("Storage.Type", "local")
-	viper.SetDefault("Storage.LocalPath", "tempshare-files")
+	viper.SetDefault("Storage.LocalPath", "data/files") // 确保路径与 docker-compose volume 对应
 	viper.SetDefault("Storage.S3.UsePathStyle", true)
-	// ✨✨✨ 修复点: 添加 ClamdSocket 的默认值 ✨✨✨
-	viper.SetDefault("ClamdSocket", "") // 默认不启用
+	viper.SetDefault("ClamdSocket", "")
 	viper.SetDefault("Initialized", false)
 
+	// --- 核心修复点: 只在文件存在时读取，如果不存在则忽略错误 ---
 	if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
-			slog.Warn("配置文件未找到，将使用默认值和环境变量。", "path", path)
+			// 文件未找到，这是 Docker 环境下的预期行为，所以我们忽略这个错误
+			slog.Info("配置文件 config.json 未找到，将完全依赖环境变量和默认值。")
 		} else {
+			// 配置文件找到了，但是解析出错了，这是一个需要报告的严重错误
 			return err
 		}
 	}
@@ -90,29 +88,35 @@ func LoadConfig(path string) error {
 	viper.AutomaticEnv()
 
 	AppConfig = &Config{}
-	err := viper.Unmarshal(AppConfig)
-	if err != nil {
+	if err := viper.Unmarshal(&AppConfig); err != nil {
 		return err
 	}
 
+	// 敏感信息或需要覆盖的信息，再次从环境变量中强行读取
 	if dsn := viper.GetString("DATABASE_DSN"); dsn != "" {
 		AppConfig.Database.DSN = dsn
 	}
-
-	// 从环境变量中获取敏感信息
+	if localPath := viper.GetString("STORAGE_LOCALPATH"); localPath != "" {
+		AppConfig.Storage.LocalPath = localPath
+	}
+	if port := viper.GetString("SERVERPORT"); port != "" {
+		AppConfig.ServerPort = port
+	}
 	AppConfig.Storage.S3.AccessKeyID = viper.GetString("STORAGE_S3_ACCESSKEYID")
 	AppConfig.Storage.S3.SecretAccessKey = viper.GetString("STORAGE_S3_SECRETACCESSKEY")
 	AppConfig.Storage.WebDAV.Username = viper.GetString("STORAGE_WEBDAV_USERNAME")
 	AppConfig.Storage.WebDAV.Password = viper.GetString("STORAGE_WEBDAV_PASSWORD")
-	// ✨✨✨ 修复点: 从环境变量读取 ClamdSocket ✨✨✨
 	if clamdSocket := viper.GetString("CLAMDSOCKET"); clamdSocket != "" {
 		AppConfig.ClamdSocket = clamdSocket
 	}
+	// `Initialized` 标志主要由环境变量控制
+	AppConfig.Initialized = viper.GetBool("INITIALIZED")
 
-	slog.Info("配置加载成功",
+	slog.Info("配置加载完成",
 		slog.String("serverPort", AppConfig.ServerPort),
 		slog.String("dbType", AppConfig.Database.Type),
 		slog.String("storageType", AppConfig.Storage.Type),
+		slog.Bool("initialized", AppConfig.Initialized),
 	)
 
 	return nil
