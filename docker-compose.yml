@@ -13,7 +13,7 @@ services:
       # 将宿主机的端口 (例如 8080) 映射到容器的 TEMPSHARE_SERVERPORT 端口
       # 格式: "HOST_PORT:CONTAINER_PORT"
       # 您可以修改 "8080" 为您希望在宿主机上使用的任何未被占用的端口
-      - "8080:${TEMPSHARE_SERVERPORT:-8080}"
+      - "8088:${TEMPSHARE_SERVERPORT:-8080}"
     volumes:
       # 持久化数据卷，用于存储 SQLite 数据库和本地文件
       # ./data/sqlite 目录将挂载到容器内的 /app/data
