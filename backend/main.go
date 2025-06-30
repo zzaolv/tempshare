@@ -11,15 +11,16 @@ import (
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+	"github.com/spf13/viper" // ✨ 导入 viper 以便直接使用
 )
 
 func main() {
 	InitLogger()
 
-	// ✨✨✨ 核心修复点: 不再因为 config.json 找不到而崩溃 ✨✨✨
-	// 我们调用 LoadConfig，它内部会处理文件不存在的情况并继续使用环境变量
+	// ✨✨✨ 核心修复点 ✨✨✨
+	// LoadConfig 现在只在真正发生错误时才返回 err
 	if err := LoadConfig("config.json"); err != nil {
-		slog.Error("加载配置时发生严重错误", "error", err)
+		slog.Error("加载配置时发生严重错误，程序无法启动", "error", err)
 		os.Exit(1)
 	}
 
@@ -27,6 +28,8 @@ func main() {
 		runInitializationGuide()
 		os.Exit(1)
 	}
+
+	// ... 后续代码与之前版本相同 ...
 
 	storage, err := NewFileStorage(AppConfig.Storage)
 	if err != nil {
@@ -40,7 +43,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	clamdScanner, err := NewScanner(AppConfig.ClamdSocket)
+	// 直接从 viper 获取最终值，因为它综合了文件、环境变量和默认值
+	clamdSocket := viper.GetString("ClamdSocket")
+	clamdScanner, err := NewScanner(clamdSocket)
 	if err != nil {
 		slog.Warn("Clamd 扫描器初始化失败，文件扫描功能将不可用。", "error", err)
 	}
@@ -50,7 +55,7 @@ func main() {
 	router := gin.Default()
 	router.SetTrustedProxies(nil)
 
-	allowedOriginsEnv := os.Getenv("TEMPSHARE_CORS_ALLOWED_ORIGINS")
+	allowedOriginsEnv := viper.GetString("CORS_ALLOWED_ORIGINS") // 从 viper 获取
 	var allowedOrigins []string
 	if allowedOriginsEnv != "" {
 		allowedOrigins = strings.Split(allowedOriginsEnv, ",")
@@ -117,6 +122,7 @@ func main() {
 	}
 }
 
+// ... runInitializationGuide 函数保持不变 ...
 func runInitializationGuide() {
 	fmt.Println("--- 闪传驿站 | TempShare 未初始化 ---")
 	fmt.Println("检测到这是首次运行或配置尚未完成。")
