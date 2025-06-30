@@ -1,5 +1,5 @@
 // src/pages/UploaderPage.tsx
-import { useState, useCallback, useRef, useMemo } from 'react';
+import { useState, useCallback, useRef, useMemo, useEffect } from 'react';
 import type { FormEvent, ChangeEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useDropzone } from 'react-dropzone';
@@ -14,6 +14,7 @@ import UploadProgressCircle from '../components/UploadProgressCircle.tsx';
 import HumanizedCountdown from '../components/HumanizedCountdown.tsx';
 import CodeInput from '../components/CodeInput';
 import type { CodeInputHandle } from '../components/CodeInput';
+import { useUploaderStore } from '../store/uploaderStore.ts';
 
 // (辅助函数 createProgressStream 和 formatBytes 保持不变)
 function createProgressStream(totalSize: number, onProgress: (progress: number) => void, onSpeedUpdate: (speed: string) => void): TransformStream<Uint8Array, Uint8Array> {
@@ -53,15 +54,12 @@ const formatBytes = (bytes: number, decimals = 2) => {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
 };
 
-const InteractiveUploader = ({ onAddFileClick, onAddFolderClick, onCodeSubmit, code, setCode, isInputMode, setIsInputMode }: {
+const InteractiveUploader = ({ onAddFileClick, onAddFolderClick, onCodeSubmit }: {
     onAddFileClick: () => void;
     onAddFolderClick: () => void;
     onCodeSubmit: (e: FormEvent) => void;
-    code: string;
-    setCode: (code: string) => void;
-    isInputMode: boolean;
-    setIsInputMode: (isInput: boolean) => void;
 }) => {
+    const { isInputMode, code, setIsInputMode, setCode } = useUploaderStore();
     const codeInputRef = useRef<CodeInputHandle>(null);
     const [hoverTarget, setHoverTarget] = useState<'none' | 'code' | 'upload'>('none');
 
@@ -105,13 +103,11 @@ const InteractiveUploader = ({ onAddFileClick, onAddFolderClick, onCodeSubmit, c
                         className={`relative h-16 ${cardBgClass} rounded-full shadow-soft-xl flex items-center`}
                         onMouseLeave={() => setHoverTarget('none')}
                     >
-                        {/* "取件"区域 */}
                         <div
                             className="w-[120px] h-full flex-shrink-0 cursor-pointer flex items-center justify-center"
                             onMouseEnter={() => setHoverTarget('code')}
                             onClick={handleSwitchToInput}
                         >
-                            {/* ... "取件"内部的动画和文本 ... */}
                             <div className="relative w-full h-full flex items-center justify-center">
                                 <motion.span className="absolute flex items-center justify-center gap-1 whitespace-nowrap" animate={{ opacity: hoverTarget === 'code' ? 0 : 1 }}>
                                     <KeyRound className="text-brand-cyan" size={20} />
@@ -129,16 +125,13 @@ const InteractiveUploader = ({ onAddFileClick, onAddFolderClick, onCodeSubmit, c
                             animate={{ opacity: hoverTarget !== 'none' ? 0 : 1 }}
                         />
                         
-                        {/* "上传" 区域的容器 */}
-                        {/* ✨✨✨ 最终修复：onClick 绑定在外层大区域，onMouseEnter 绑定在内层小按钮 ✨✨✨ */}
                         <div
                             className="relative flex-1 h-full cursor-pointer flex items-center justify-center"
-                            onClick={onAddFileClick} // 整个右侧区域都可点击
+                            onClick={onAddFileClick}
                         >
-                            {/* 这个 motion.div 才是悬停的目标 */}
                             <motion.div
-                                className="flex items-center justify-center gap-2 p-3 rounded-full" // 增加内边距和圆角来创建一个合理的悬停区域
-                                onMouseEnter={() => setHoverTarget('upload')} // 仅在此处触发悬停
+                                className="flex items-center justify-center gap-2 p-3 rounded-full"
+                                onMouseEnter={() => setHoverTarget('upload')}
                                 animate={{ opacity: hoverTarget === 'upload' ? 0 : 1 }}
                             >
                                 <Plus className="text-brand-dark" size={24} />
@@ -146,7 +139,6 @@ const InteractiveUploader = ({ onAddFileClick, onAddFolderClick, onCodeSubmit, c
                             </motion.div>
                         </div>
 
-                        {/* 覆盖层，其显示逻辑现在完全依赖于 `hoverTarget` 状态 */}
                         <AnimatePresence>
                             {hoverTarget === 'upload' && (
                                 <motion.div
@@ -276,6 +268,9 @@ const UploadSettingsPanel = ({
 
 
 const UploaderPage = () => {
+    // ✨ 修正：移除了未使用的 `setAccessCodeInput`
+    const { code: accessCodeInput, resetCode, setIsInputMode } = useUploaderStore();
+
     const [view, setView] = useState<'initial' | 'settings' | 'transferring' | 'success'>('initial');
     const [files, setFiles] = useState<File[]>([]);
     const folderInputRef = useRef<HTMLInputElement>(null);
@@ -292,8 +287,6 @@ const UploaderPage = () => {
     const uploadController = useRef<AbortController | null>(null);
     const [expiry, setExpiry] = useState(180); 
     const [downloadOnce, setDownloadOnce] = useState(false);
-    const [isInputMode, setIsInputMode] = useState(false);
-    const [accessCodeInput, setAccessCodeInput] = useState('');
     const [processedFilename, setProcessedFilename] = useState('');
     const [isProcessing, setIsProcessing] = useState(false);
     const totalUploadSize = useMemo(() => files.reduce((acc, file) => acc + file.size, 0), [files]);
@@ -319,11 +312,17 @@ const UploaderPage = () => {
         setShowQRCode(false);
         setExpiry(180);
         setDownloadOnce(false);
-        setAccessCodeInput('');
+        resetCode();
         setIsInputMode(false);
         setProcessedFilename('');
         setIsProcessing(false);
-    }, []);
+    }, [resetCode, setIsInputMode]);
+
+    useEffect(() => {
+        return () => {
+            resetState();
+        }
+    }, [resetState]);
 
     const initiateStreamUpload = async (file: File) => {
         if (usePassword && password.length < 6) {
@@ -646,10 +645,6 @@ const UploaderPage = () => {
                             onAddFileClick={openFileDialog}
                             onAddFolderClick={() => folderInputRef.current?.click()}
                             onCodeSubmit={handleAccessCodeSubmit}
-                            code={accessCodeInput}
-                            setCode={setAccessCodeInput}
-                            isInputMode={isInputMode}
-                            setIsInputMode={setIsInputMode}
                         />
                     </motion.div>
                 );

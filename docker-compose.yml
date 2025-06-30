@@ -1,0 +1,81 @@
+services:
+  # 前端服务 (Nginx)
+  tempshare-frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: tempshare-frontend
+    ports:
+      # 将容器的 80 端口映射到宿主机由环境变量定义的端口
+      # 默认映射到 8088 端口
+      - "${TEMPSHARE_HTTP_PORT:-8088}:80" 
+    # 不再需要挂载证书，因为 SSL/TLS 由 NPM 处理
+    # volumes:
+    #   - ./certs:/etc/nginx/ssl
+    depends_on:
+      - tempshare-backend
+    restart: unless-stopped
+    networks:
+      - tempshare-net
+
+  # 后端服务 (Go)
+  tempshare-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: tempshare-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    networks:
+      - tempshare-net
+    # 如果使用 ClamAV，可以取消下面的注释
+    # depends_on:
+    #   - clamav
+
+  # 如果选择使用 MySQL (取消注释以启用)
+  # tempshare-db:
+  #   image: mysql:8.0
+  #   container_name: tempshare-mysql
+  #   command: --default-authentication-plugin=mysql_native_password
+  #   restart: unless-stopped
+  #   environment:
+  #     - MYSQL_ROOT_PASSWORD=mysqlpassword
+  #     - MYSQL_DATABASE=tempshare
+  #   volumes:
+  #     - tempshare_db_data:/var/lib/mysql
+  #   networks:
+  #     - tempshare-net
+
+  # 如果选择使用 PostgreSQL (取消注释以启用)
+  # tempshare-db:
+  #   image: postgres:15
+  #   container_name: tempshare-postgres
+  #   restart: unless-stopped
+  #   environment:
+  #     - POSTGRES_USER=user
+  #     - POSTGRES_PASSWORD=password
+  #     - POSTGRES_DB=tempshare
+  #   volumes:
+  #     - tempshare_db_data:/var/lib/postgresql/data
+  #   networks:
+  #     - tempshare-net
+  
+  # 如果需要 ClamAV 扫描 (取消注释以启用)
+  # clamav:
+  #   image: clamav/clamav:stable
+  #   container_name: tempshare-clamav
+  #   restart: unless-stopped
+  #   networks:
+  #     - tempshare-net
+
+# 定义网络
+networks:
+  tempshare-net:
+    driver: bridge
+
+# 定义持久化卷
+volumes:
+  tempshare_db_data: # 用于数据库数据

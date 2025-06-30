@@ -1,7 +1,8 @@
+// backend/middleware.go
 package main
 
 import (
-	"log"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -68,7 +69,7 @@ func (i *IPRateLimiter) RateLimitMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		limiter := i.getLimiter(c.ClientIP())
 		if !limiter.Allow() {
-			log.Printf("🚫 速率限制触发! IP: %s", c.ClientIP())
+			slog.Warn("速率限制触发", "clientIP", c.ClientIP())
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"message": "请求过于频繁，请稍后再试。"})
 			return
 		}

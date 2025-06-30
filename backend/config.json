@@ -1,6 +1,30 @@
+
 {
+    "Initialized": true,
     "ServerPort": "8080",
-    "DatabasePath": "tempshare.db",
+    "Database": {
+        "Type": "sqlite",
+        "DSN": "tempshare.db"
+    },
+    "Storage": {
+        "Type": "local",
+        "Local": {
+            "Path": "tempshare-files"
+        },
+        "WebDAV": {
+            "URL": "",
+            "Username": "",
+            "Password": ""
+        },
+        "S3": {
+            "Bucket": "",
+            "Region": "",
+            "Endpoint": "",
+            "AccessKey": "",
+            "SecretKey": "",
+            "UsePathStyle": false
+        }
+    },
     "ClamdSocket": "tcp://127.0.0.1:3310",
     "MaxUploadSizeMB": 5120,
     "RateLimit": {

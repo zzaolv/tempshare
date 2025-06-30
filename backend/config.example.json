@@ -1,0 +1,33 @@
+{
+    "ServerPort": "8080",
+    "ClamdSocket": "tcp://127.0.0.1:3310",
+    "MaxUploadSizeMB": 5120,
+    "RateLimit": {
+        "Enabled": true,
+        "Requests": 30,
+        "DurationMinutes": 10
+    },
+    "Database": {
+        "Type": "sqlite",
+        "DSN": "data/tempshare.db"
+    },
+    "Storage": {
+        "Type": "local",
+        "Local": {
+            "Path": "data/tempshare-files"
+        },
+        "S3": {
+            "Endpoint": "",
+            "Region": "us-east-1",
+            "Bucket": "",
+            "AccessKeyID": "",
+            "SecretAccessKey": "",
+            "UsePathStyle": false
+        },
+        "WebDAV": {
+            "URL": "",
+            "Username": "",
+            "Password": ""
+        }
+    }
+}

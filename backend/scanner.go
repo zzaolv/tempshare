@@ -1,7 +1,8 @@
+// backend/scanner.go
 package main
 
 import (
-	"log"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -16,7 +17,7 @@ type ClamdScanner struct {
 // 它会尝试连接到 clamd 守护进程，并在连接失败时进行多次重试。
 func NewScanner(clamdAddress string) (*ClamdScanner, error) {
 	if clamdAddress == "" {
-		log.Println("🟡 警告: ClamdSocket 未在 config.json 中配置，文件扫描功能将不可用。")
+		slog.Warn("ClamdSocket 未在 config.json 中配置，文件扫描功能将不可用。")
 		return &ClamdScanner{client: nil}, nil
 	}
 
@@ -30,27 +31,24 @@ func NewScanner(clamdAddress string) (*ClamdScanner, error) {
 		c = clamd.NewClamd(clamdAddress)
 		err = c.Ping()
 		if err == nil {
-			log.Printf("🟢 成功连接到 clamd 守护进程 at %s (在第 %d 次尝试)", clamdAddress, i)
+			slog.Info("成功连接到 clamd 守护进程", "address", clamdAddress, "attempt", i)
 			return &ClamdScanner{client: c}, nil
 		}
 
-		log.Printf("🟠 (尝试 %d/%d) 无法连接到 clamd 守护进程 at %s: %v", i, maxRetries, clamdAddress, err)
+		slog.Warn("无法连接到 clamd 守护进程", "attempt", i, "maxAttempts", maxRetries, "address", clamdAddress, "error", err)
 
 		if i < maxRetries {
-			log.Printf("   将在 %v 后重试...", retryDelay)
+			slog.Info("将在指定延迟后重试", "delay", retryDelay)
 			time.Sleep(retryDelay)
 		}
 	}
 
-	// 所有重试都失败后
-	log.Printf("🔴 最终无法连接到 clamd。所有 %d 次尝试均失败。", maxRetries)
-	log.Println("   请确保 clamd 正在运行，并且地址配置正确。")
-	log.Println("   在Linux上, 运行 'sudo systemctl start clamav-daemon' 并使用 'systemctl status clamav-daemon' 检查状态。")
-	log.Println("   在Windows上, 启动 'ClamAV ClamD' 服务。")
-	log.Println("   文件扫描功能将在此次运行中被禁用。")
+	slog.Error("最终无法连接到 clamd，所有重试均失败", "maxAttempts", maxRetries)
+	slog.Warn("请确保 clamd 正在运行，并且地址配置正确。")
+	slog.Warn("在Linux上, 运行 'sudo systemctl start clamav-daemon' 并使用 'systemctl status clamav-daemon' 检查状态。")
+	slog.Warn("在Windows上, 启动 'ClamAV ClamD' 服务。")
+	slog.Warn("文件扫描功能将在此次运行中被禁用。")
 
-	// 返回 nil, error，让主程序知道初始化失败，但我们将错误处理为非致命的。
-	// 主程序 `main.go` 中已经有逻辑处理这个错误，所以这里返回原始错误是正确的。
 	return nil, err
 }
 
@@ -59,28 +57,27 @@ func (s *ClamdScanner) ScanFile(filePath string) (string, string) {
 		return ScanStatusSkipped, "扫描器未初始化"
 	}
 
-	log.Printf("🔬 (clamd) 开始扫描文件: %s", filePath)
+	slog.Info("开始扫描文件", "component", "clamd", "path", filePath)
 
 	response, err := s.client.ScanFile(filePath)
 	if err != nil {
-		log.Printf("⚠️ (clamd) 扫描出错: %v", err)
+		slog.Error("Clamd 扫描通信出错", "component", "clamd", "error", err)
 		return ScanStatusError, "Clamd扫描通信失败"
 	}
 
-	// 这个通道的读取逻辑保持不变
 	for result := range response {
-		log.Printf("  - Clamd 响应: %s", result.Raw)
+		slog.Debug("收到 Clamd 响应", "component", "clamd", "rawResponse", result.Raw)
 		if result.Status == clamd.RES_FOUND {
 			virusName := strings.TrimSuffix(strings.TrimPrefix(result.Raw, result.Path+": "), " FOUND")
-			log.Printf("🚫 (clamd) 危险! 文件 %s 发现病毒: %s", filePath, virusName)
+			slog.Warn("危险! 文件发现病毒", "component", "clamd", "path", filePath, "virus", virusName)
 			return ScanStatusInfected, virusName
 		} else if result.Status == clamd.RES_ERROR {
 			errorDetails := strings.TrimSuffix(strings.TrimPrefix(result.Raw, result.Path+": "), " ERROR")
-			log.Printf("⚠️ (clamd) 扫描时发生错误: %s", errorDetails)
+			slog.Error("Clamd 扫描时发生错误", "component", "clamd", "details", errorDetails)
 			return ScanStatusError, errorDetails
 		}
 	}
 
-	log.Printf("✅ (clamd) 扫描完成，文件安全: %s", filePath)
+	slog.Info("扫描完成，文件安全", "component", "clamd", "path", filePath)
 	return ScanStatusClean, "文件安全"
 }

@@ -1,20 +1,24 @@
+// backend/tasks.go
 package main
 
 import (
-	"log"
-	"os"
+	"context"
+	"log/slog"
 	"time"
+
+	"tempshare/storage" // 引入 storage
 
 	"gorm.io/gorm"
 )
 
-func CleanupExpiredFilesTask(db *gorm.DB) {
+// CleanupExpiredFilesTask 现在需要 StorageProvider
+func CleanupExpiredFilesTask(db *gorm.DB, sp storage.StorageProvider) {
 	ticker := time.NewTicker(10 * time.Minute)
 	defer ticker.Stop()
 
 	for {
 		<-ticker.C
-		log.Println("🧹 开始执行过期文件清理任务...")
+		slog.Info("开始执行过期文件清理任务...")
 
 		const batchSize = 100
 		var deletedCount int64
@@ -24,7 +28,7 @@ func CleanupExpiredFilesTask(db *gorm.DB) {
 
 			result := db.Where("expires_at <= ?", time.Now()).Limit(batchSize).Find(&expiredFiles)
 			if result.Error != nil {
-				log.Printf("! 清理任务错误: 查询批次失败: %v", result.Error)
+				slog.Error("清理任务错误: 查询批次失败", "error", result.Error)
 				break
 			}
 
@@ -33,21 +37,24 @@ func CleanupExpiredFilesTask(db *gorm.DB) {
 			}
 
 			for _, file := range expiredFiles {
-				if err := os.Remove(file.StorageKey); err != nil && !os.IsNotExist(err) {
-					log.Printf("! 清理错误: 删除文件 %s (ID: %s) 失败: %v", file.StorageKey, file.ID, err)
+				// 使用 StorageProvider 删除文件
+				if err := sp.Delete(context.Background(), file.StorageKey); err != nil {
+					slog.Error("清理错误: 删除存储文件失败", "id", file.ID, "key", file.StorageKey, "error", err)
 				}
+
 				if err := db.Delete(&file).Error; err != nil {
-					log.Printf("! 清理错误: 删除数据库记录 (ID: %s) 失败: %v", file.ID, err)
+					slog.Error("清理错误: 删除数据库记录失败", "id", file.ID, "error", err)
 				} else {
+					slog.Info("已清理过期文件", "id", file.ID, "accessCode", file.AccessCode, "filename", file.Filename)
 					deletedCount++
 				}
 			}
 		}
 
 		if deletedCount > 0 {
-			log.Printf("🧹 本轮清理任务完成，共清理了 %d 个文件。", deletedCount)
+			slog.Info("本轮清理任务完成", "deletedCount", deletedCount)
 		} else {
-			log.Println("🧹 清理完成，没有发现新的过期文件。")
+			slog.Info("清理完成，没有发现新的过期文件。")
 		}
 	}
 }

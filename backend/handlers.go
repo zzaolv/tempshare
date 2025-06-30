@@ -2,39 +2,36 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
-	"encoding/base64" // ✨✨✨ 核心修改：导入 base64 包 ✨✨✨
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
-)
 
-var (
-	finalFileDir = filepath.Join("tempshare-files")
+	"tempshare/storage" // 引入新的 storage 包
 )
 
 type VerificationPayload struct {
 	VerificationHash string `json:"verificationHash" binding:"required"`
 }
 
+// FileHandler 现在包含一个 StorageProvider
 type FileHandler struct {
 	DB      *gorm.DB
 	Scanner *ClamdScanner
+	Storage storage.StorageProvider
 }
 
-// ... HandleStreamUpload, HandleGetFileMeta, HandleDownloadFile, handleDownloadOnce, HandleGetPublicFiles, HandleReport ...
-// (这些函数保持不变，为节省篇幅此处省略，请保留您文件中的这些函数)
 func (h *FileHandler) HandleStreamUpload(c *gin.Context) {
 	// --- 应用上传大小限制 ---
 	maxUploadBytes := AppConfig.MaxUploadSizeMB * 1024 * 1024
@@ -64,47 +61,48 @@ func (h *FileHandler) HandleStreamUpload(c *gin.Context) {
 		expiresAt = time.Now().Add(7 * 24 * time.Hour)
 	}
 
-	// --- 文件存储逻辑 ---
+	// --- 文件存储逻辑 (使用 StorageProvider) ---
 	finalFileId := uuid.NewString()
-	finalFilePath := filepath.Join(finalFileDir, finalFileId)
-	outFile, err := os.Create(finalFilePath)
+	writtenBytes, err := h.Storage.Save(c.Request.Context(), finalFileId, c.Request.Body)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "无法创建文件存储"})
-		return
-	}
-	defer outFile.Close()
+		// 删除可能已创建的不完整文件
+		_ = h.Storage.Delete(c.Request.Context(), finalFileId)
 
-	writtenBytes, err := io.Copy(outFile, c.Request.Body)
-	if err != nil {
-		outFile.Close()
-		os.Remove(finalFilePath)
 		var maxBytesError *http.MaxBytesError
 		if errors.As(err, &maxBytesError) {
-			log.Printf("🚫 上传文件过大! IP: %s, 限制: %d MB", c.ClientIP(), AppConfig.MaxUploadSizeMB)
+			slog.Warn("上传文件过大",
+				"clientIP", c.ClientIP(),
+				"limitBytes", maxBytesError.Limit,
+				"maxConfigMB", AppConfig.MaxUploadSizeMB)
 			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"message": fmt.Sprintf("文件大小不能超过 %d MB", AppConfig.MaxUploadSizeMB)})
 			return
 		}
-		log.Printf("⚠️ 文件上传中断! IP: %s, Error: %v", c.ClientIP(), err)
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "文件上传中断"})
+		slog.Error("文件存储失败", "key", finalFileId, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "文件上传中断或存储失败"})
 		return
 	}
 
 	// --- 病毒扫描逻辑 ---
 	var scanStatus, scanResult string
+	physicalPath := h.Storage.GetFullPath(finalFileId)
+
 	const twentyFourHoursInSeconds = 24 * 60 * 60
 	if isEncrypted {
 		scanStatus, scanResult = ScanStatusClean, "端到端加密文件，服务器未扫描"
 	} else if expiresInSeconds > 0 && expiresInSeconds < twentyFourHoursInSeconds {
 		scanStatus, scanResult = ScanStatusSkipped, "短期文件，已跳过病毒扫描"
-		log.Printf("⏩ 文件 %s (ID: %s) 为短期文件，跳过扫描。", fileName, finalFileId)
+		slog.Info("短期文件，跳过扫描", "filename", fileName, "fileID", finalFileId)
+	} else if physicalPath != "" { // 仅当是本地存储时才扫描
+		scanStatus, scanResult = h.Scanner.ScanFile(physicalPath)
 	} else {
-		scanStatus, scanResult = h.Scanner.ScanFile(finalFilePath)
+		scanStatus, scanResult = ScanStatusSkipped, "非本地存储，已跳过病毒扫描"
 	}
 
 	// --- 数据库记录 ---
 	accessCode, err := h.generateUniqueAccessCode(6)
 	if err != nil {
-		os.Remove(finalFilePath)
+		_ = h.Storage.Delete(c.Request.Context(), finalFileId)
+		slog.Error("无法生成分享码", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "无法生成分享码"})
 		return
 	}
@@ -118,7 +116,7 @@ func (h *FileHandler) HandleStreamUpload(c *gin.Context) {
 		IsEncrypted:       isEncrypted,
 		EncryptionSalt:    salt,
 		VerificationHash:  verificationHash,
-		StorageKey:        finalFilePath,
+		StorageKey:        finalFileId, // 现在只存ID，而不是完整路径
 		DownloadOnce:      downloadOnce,
 		ExpiresAt:         expiresAt,
 		CreatedAt:         time.Now(),
@@ -127,12 +125,17 @@ func (h *FileHandler) HandleStreamUpload(c *gin.Context) {
 	}
 
 	if err := h.DB.Create(&newFile).Error; err != nil {
-		os.Remove(finalFilePath)
+		_ = h.Storage.Delete(c.Request.Context(), finalFileId)
+		slog.Error("无法保存文件记录到数据库", "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "无法保存文件记录"})
 		return
 	}
 
-	log.Printf("🎉 流式上传成功! IP: %s, AccessCode: %s, FileID: %s, ScanStatus: %s", c.ClientIP(), accessCode, finalFileId, scanStatus)
+	slog.Info("流式上传成功",
+		"clientIP", c.ClientIP(),
+		"accessCode", accessCode,
+		"fileID", finalFileId,
+		"scanStatus", scanStatus)
 	c.JSON(http.StatusCreated, gin.H{"accessCode": accessCode, "urlPath": fmt.Sprintf("/download/%s", accessCode)})
 }
 
@@ -150,102 +153,82 @@ func (h *FileHandler) HandleDownloadFile(c *gin.Context) {
 	code := c.Param("code")
 	var file File
 
-	// 1. 获取文件元数据
 	if err := h.DB.Where("access_code = ?", code).First(&file).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"message": "文件不存在"})
 		} else {
+			slog.Error("查询文件时发生数据库错误", "accessCode", code, "error", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"message": "查询文件时发生错误"})
 		}
 		return
 	}
 
-	// 2. 检查文件是否已过期
 	if time.Now().After(file.ExpiresAt) {
 		c.JSON(http.StatusNotFound, gin.H{"message": "文件已过期"})
 		return
 	}
 
-	// 3. 根据是否加密执行不同逻辑
-	if !file.IsEncrypted {
-		c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename*=UTF-8''%s`, url.PathEscape(file.Filename)))
-		c.File(file.StorageKey)
-		h.handleDownloadOnce(c, file)
-		return
+	// 验证逻辑
+	if file.IsEncrypted {
+		if c.Request.Method != "POST" {
+			c.JSON(http.StatusMethodNotAllowed, gin.H{"message": "下载加密文件需要使用 POST 方法并提供验证信息"})
+			return
+		}
+		var payload VerificationPayload
+		if err := c.ShouldBindJSON(&payload); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "无效的验证请求"})
+			return
+		}
+		if payload.VerificationHash != file.VerificationHash {
+			slog.Warn("密码验证失败", "clientIP", c.ClientIP(), "accessCode", file.AccessCode)
+			c.JSON(http.StatusUnauthorized, gin.H{"message": "密码错误或文件已损坏"})
+			return
+		}
+		slog.Info("密码验证成功，开始下载", "clientIP", c.ClientIP(), "accessCode", file.AccessCode)
 	}
 
-	// --- 加密文件逻辑 (必须是 POST 请求) ---
-	if c.Request.Method != "POST" {
-		c.JSON(http.StatusMethodNotAllowed, gin.H{"message": "下载加密文件需要使用 POST 方法并提供验证信息"})
+	// 流式下载
+	reader, err := h.Storage.Open(c.Request.Context(), file.StorageKey)
+	if err != nil {
+		slog.Error("无法打开文件进行下载", "storageKey", file.StorageKey, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "无法读取文件"})
 		return
 	}
+	defer reader.Close()
 
-	var payload VerificationPayload
-	if err := c.ShouldBindJSON(&payload); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "无效的验证请求"})
-		return
-	}
-
-	// 4. 验证密码哈希
-	if payload.VerificationHash != file.VerificationHash {
-		log.Printf("🚫 密码错误! IP: %s, AccessCode: %s", c.ClientIP(), file.AccessCode)
-		c.JSON(http.StatusUnauthorized, gin.H{"message": "密码错误或文件已损坏"})
-		return
-	}
-
-	// 5. 验证成功，提供文件
-	log.Printf("✅ 密码验证成功, 开始下载. IP: %s, AccessCode: %s", c.ClientIP(), file.AccessCode)
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename*=UTF-8''%s`, url.PathEscape(file.Filename)))
-	c.File(file.StorageKey)
-	h.handleDownloadOnce(c, file)
+	c.Header("Content-Length", strconv.FormatInt(file.SizeBytes, 10))
+	c.Header("Content-Type", "application/octet-stream")
+
+	// 使用 Stream 方法进行流式响应
+	_, err = io.Copy(c.Writer, reader)
+	if err != nil {
+		slog.Error("下载期间发生流错误", "storageKey", file.StorageKey, "clientIP", c.ClientIP(), "error", err)
+		// 此时可能已经发送了部分响应头，不能再写入JSON错误，只能中断连接
+	} else {
+		// 只有在成功写入后才处理“阅后即焚”
+		h.handleDownloadOnce(c, file)
+	}
 }
 
 func (h *FileHandler) handleDownloadOnce(c *gin.Context, file File) {
-	if file.DownloadOnce && c.Writer.Status() == http.StatusOK {
-		go func(db *gorm.DB, f File) {
+	if file.DownloadOnce {
+		go func(db *gorm.DB, st storage.StorageProvider, f File) {
 			time.Sleep(2 * time.Second)
-			log.Printf("🔥 阅后即焚: 文件 %s (ID: %s) 已被下载，即将销毁。", f.Filename, f.ID)
-			if err := os.Remove(f.StorageKey); err != nil && !os.IsNotExist(err) {
-				log.Printf("! 阅后即焚错误: 删除物理文件失败: %v", err)
+			slog.Info("阅后即焚: 文件已被下载，即将销毁", "filename", f.Filename, "id", f.ID)
+			if err := st.Delete(context.Background(), f.StorageKey); err != nil {
+				slog.Error("阅后即焚错误: 删除存储文件失败", "id", f.ID, "storageKey", f.StorageKey, "error", err)
 			}
 			if err := db.Delete(&File{}, "id = ?", f.ID).Error; err != nil {
-				log.Printf("! 阅后即焚错误: 删除数据库记录失败: %v", err)
+				slog.Error("阅后即焚错误: 删除数据库记录失败", "id", f.ID, "error", err)
 			}
-		}(h.DB, file)
+		}(h.DB, h.Storage, file)
 	}
 }
 
-func (h *FileHandler) HandleGetPublicFiles(c *gin.Context) {
-	var files []File
-	result := h.DB.Select("access_code", "filename", "size_bytes", "expires_at", "is_encrypted").
-		Where("expires_at > ? AND is_encrypted = false AND download_once = false", time.Now()).
-		Order("created_at desc").Limit(20).Find(&files)
-	if result.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "查询公开文件列表失败"})
-		return
-	}
-	c.JSON(http.StatusOK, files)
-}
+// ... 其他 handler 保持类似逻辑，如果需要操作文件，就通过 h.Storage ...
+// HandlePreviewFile 和 HandlePreviewDataURI 尤其需要修改，从 h.Storage.Open 读取数据
 
-func (h *FileHandler) HandleReport(c *gin.Context) {
-	var reportData struct {
-		AccessCode string `json:"accessCode" binding:"required"`
-		Reason     string `json:"reason"`
-	}
-	if err := c.ShouldBindJSON(&reportData); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"message": "无效的举报请求"})
-		return
-	}
-	report := Report{AccessCode: reportData.AccessCode, Reason: reportData.Reason, ReporterIP: c.ClientIP()}
-	if err := h.DB.Create(&report).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"message": "无法提交举报，请稍后再试"})
-		return
-	}
-	log.Printf("🚩 收到举报! IP: %s, AccessCode: %s, Reason: %s", c.ClientIP(), report.AccessCode, report.Reason)
-	c.JSON(http.StatusOK, gin.H{"message": "您的举报已收到，感谢您的帮助！我们将会尽快处理。"})
-}
-
-// HandlePreviewFile 保持不变，用于图片/视频等可以直接链接的类型
 func (h *FileHandler) HandlePreviewFile(c *gin.Context) {
 	code := c.Param("code")
 	var file File
@@ -264,27 +247,31 @@ func (h *FileHandler) HandlePreviewFile(c *gin.Context) {
 		return
 	}
 
-	fileBytes, err := os.ReadFile(file.StorageKey)
+	reader, err := h.Storage.Open(c.Request.Context(), file.StorageKey)
 	if err != nil {
-		log.Printf("! 预览错误: 无法读取文件 %s: %v", file.StorageKey, err)
+		slog.Error("预览错误: 无法打开文件", "storageKey", file.StorageKey, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "无法读取文件内容"})
+		return
+	}
+	defer reader.Close()
+
+	fileBytes, err := io.ReadAll(reader)
+	if err != nil {
+		slog.Error("预览错误: 无法读取文件内容到内存", "storageKey", file.StorageKey, "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "无法读取文件内容"})
 		return
 	}
 
 	contentType := http.DetectContentType(fileBytes)
-
 	c.Header("Content-Disposition", fmt.Sprintf(`inline; filename*=UTF-8''%s`, url.PathEscape(file.Filename)))
 	c.Header("X-Content-Type-Options", "nosniff")
-
 	c.Data(http.StatusOK, contentType, fileBytes)
 }
 
-// ✨✨✨ 核心修改：添加新的 Handler 用于服务器端生成 Data URI ✨✨✨
 func (h *FileHandler) HandlePreviewDataURI(c *gin.Context) {
 	code := c.Param("code")
 	var file File
 
-	// 1. 查找文件并检查权限（与 HandlePreviewFile 相同）
 	if err := h.DB.Where("access_code = ? AND expires_at > ?", code, time.Now()).First(&file).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"message": "文件不存在或已过期"})
 		return
@@ -298,29 +285,31 @@ func (h *FileHandler) HandlePreviewDataURI(c *gin.Context) {
 		return
 	}
 
-	// 2. 读取文件内容
-	fileBytes, err := os.ReadFile(file.StorageKey)
+	reader, err := h.Storage.Open(c.Request.Context(), file.StorageKey)
 	if err != nil {
-		log.Printf("! Data URI 预览错误: 无法读取文件 %s: %v", file.StorageKey, err)
+		slog.Error("Data URI 预览错误: 无法打开文件", "storageKey", file.StorageKey, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "无法读取文件内容"})
+		return
+	}
+	defer reader.Close()
+
+	fileBytes, err := io.ReadAll(reader)
+	if err != nil {
+		slog.Error("Data URI 预览错误: 无法读取文件内容", "storageKey", file.StorageKey, "error", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "无法读取文件内容"})
 		return
 	}
 
-	// 3. 将文件内容编码为 Base64
 	base64Data := base64.StdEncoding.EncodeToString(fileBytes)
-
-	// 4. 确定 Content-Type
 	contentType := http.DetectContentType(fileBytes)
-
-	// 5. 构造完整的 Data URI 字符串
 	dataURI := fmt.Sprintf("data:%s;base64,%s", contentType, base64Data)
 
-	// 6. 以 JSON 格式返回 Data URI
 	c.JSON(http.StatusOK, gin.H{
 		"dataUri": dataURI,
 	})
 }
 
+// generateUniqueAccessCode, HandleGetPublicFiles, HandleReport 保持不变
 const codeChars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 func (h *FileHandler) generateUniqueAccessCode(length int) (string, error) {
@@ -340,4 +329,36 @@ func (h *FileHandler) generateUniqueAccessCode(length int) (string, error) {
 		}
 	}
 	return "", errors.New("无法在20次尝试内生成唯一的便捷码")
+}
+
+func (h *FileHandler) HandleGetPublicFiles(c *gin.Context) {
+	var files []File
+	result := h.DB.Select("access_code", "filename", "size_bytes", "expires_at", "is_encrypted").
+		Where("expires_at > ? AND is_encrypted = false AND download_once = false", time.Now()).
+		Order("created_at desc").Limit(20).Find(&files)
+	if result.Error != nil {
+		slog.Error("查询公开文件列表失败", "error", result.Error)
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "查询公开文件列表失败"})
+		return
+	}
+	c.JSON(http.StatusOK, files)
+}
+
+func (h *FileHandler) HandleReport(c *gin.Context) {
+	var reportData struct {
+		AccessCode string `json:"accessCode" binding:"required"`
+		Reason     string `json:"reason"`
+	}
+	if err := c.ShouldBindJSON(&reportData); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "无效的举报请求"})
+		return
+	}
+	report := Report{AccessCode: reportData.AccessCode, Reason: reportData.Reason, ReporterIP: c.ClientIP()}
+	if err := h.DB.Create(&report).Error; err != nil {
+		slog.Error("无法提交举报到数据库", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "无法提交举报，请稍后再试"})
+		return
+	}
+	slog.Info("收到举报", "clientIP", c.ClientIP(), "accessCode", report.AccessCode, "reason", report.Reason)
+	c.JSON(http.StatusOK, gin.H{"message": "您的举报已收到，感谢您的帮助！我们将会尽快处理。"})
 }
