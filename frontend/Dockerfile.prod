@@ -1,0 +1,38 @@
+# --- Stage 1: Build ---
+# 使用 Node.js 镜像来构建前端项目
+FROM node:20-alpine AS builder
+
+# 设置工作目录
+WORKDIR /app
+
+# 复制 package.json 和 lock 文件
+COPY package*.json ./
+
+# 安装依赖
+RUN npm install
+
+# 复制所有前端代码
+COPY . .
+
+# 修改 Vite 配置以指向容器内的后端服务
+# VITE_DIRECT_API_BASE_URL 环境变量将在构建时被注入
+ARG VITE_DIRECT_API_BASE_URL=/
+RUN sed -i "s|https://localhost:8080|$VITE_DIRECT_API_BASE_URL|g" src/lib/api.ts
+
+# 构建生产版本的静态文件
+RUN npm run build
+
+# --- Stage 2: Serve ---
+# 使用 Nginx 镜像来托管构建好的静态文件
+FROM nginx:1.25-alpine
+
+# 复制构建好的静态文件到 Nginx 的默认网站目录
+COPY --from=builder /app/dist /usr/share/nginx/html
+
+# 复制 Nginx 配置文件
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+# 暴露 80 端口
+EXPOSE 80
+
+# Nginx 默认会启动

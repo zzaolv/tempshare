@@ -3,9 +3,7 @@ package main
 
 import (
 	"fmt"
-	"log/slog"
-	"os"
-	"path/filepath"
+	"strings"
 	"time"
 
 	"gorm.io/driver/mysql"
@@ -15,7 +13,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-// --- 模型定义 (保持不变) ---
+// --- 模型定义 (无变化) ---
 const (
 	ScanStatusPending  = "pending"
 	ScanStatusClean    = "clean"
@@ -25,20 +23,21 @@ const (
 )
 
 type File struct {
-	ID                string    `gorm:"primaryKey" json:"-"`
-	AccessCode        string    `gorm:"uniqueIndex,size:6" json:"accessCode"`
-	Filename          string    `gorm:"size:255" json:"filename"`
-	SizeBytes         int64     `gorm:"not null" json:"sizeBytes"`
-	OriginalSizeBytes int64     `json:"originalSizeBytes"`
-	IsEncrypted       bool      `gorm:"default:false;index" json:"isEncrypted"`
-	EncryptionSalt    string    `json:"encryptionSalt"`
-	VerificationHash  string    `gorm:"size:64" json:"-"`
-	DownloadOnce      bool      `gorm:"default:false" json:"downloadOnce"`
-	StorageKey        string    `gorm:"unique" json:"-"`
-	ExpiresAt         time.Time `gorm:"index" json:"expiresAt"`
-	CreatedAt         time.Time `json:"createdAt"`
-	ScanStatus        string    `gorm:"default:'pending';index" json:"scanStatus"`
-	ScanResult        string    `gorm:"size:255" json:"scanResult"`
+	ID                string `gorm:"primaryKey" json:"-"`
+	AccessCode        string `gorm:"uniqueIndex,size:6" json:"accessCode"`
+	Filename          string `gorm:"size:255" json:"filename"`
+	SizeBytes         int64  `gorm:"not null" json:"sizeBytes"`
+	OriginalSizeBytes int64  `json:"originalSizeBytes"`
+	IsEncrypted       bool   `gorm:"default:false;index" json:"isEncrypted"`
+	EncryptionSalt    string `json:"encryptionSalt"`
+	VerificationHash  string `gorm:"size:64" json:"-"`
+	DownloadOnce      bool   `gorm:"default:false" json:"downloadOnce"`
+	// ✨ 核心修改点: StorageKey 现在是一个更通用的标识符，而不是文件路径
+	StorageKey string    `gorm:"unique;size:255" json:"-"`
+	ExpiresAt  time.Time `gorm:"index" json:"expiresAt"`
+	CreatedAt  time.Time `json:"createdAt"`
+	ScanStatus string    `gorm:"default:'pending';index" json:"scanStatus"`
+	ScanResult string    `gorm:"size:255" json:"scanResult"`
 }
 
 type Report struct {
@@ -48,47 +47,40 @@ type Report struct {
 	ReporterIP string `json:"-"`
 }
 
-// --- 数据库连接 (核心修改) ---
-func ConnectDatabase(cfg DatabaseConfig) (*gorm.DB, error) {
+// --- 数据库连接 ---
+func ConnectDatabase(config DBConfig) (*gorm.DB, error) {
 	var dialector gorm.Dialector
 
-	gormConfig := &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Info),
-	}
+	dbType := strings.ToLower(config.Type)
+	dsn := config.DSN
 
-	switch cfg.Type {
+	switch dbType {
 	case "sqlite":
-		// 对于SQLite，确保目录存在
-		dbDir := filepath.Dir(cfg.DSN)
-		if err := os.MkdirAll(dbDir, os.ModePerm); err != nil {
-			return nil, fmt.Errorf("无法创建SQLite目录: %w", err)
-		}
-		dsn := fmt.Sprintf("%s?_pragma=journal_mode=WAL", cfg.DSN)
-		dialector = sqlite.Open(dsn)
-		slog.Info("使用 SQLite 数据库", "path", cfg.DSN)
-
+		// 为 SQLite 特殊处理 DSN，确保 WAL 模式开启
+		dsnWithWAL := fmt.Sprintf("%s?_pragma=journal_mode=WAL", dsn)
+		dialector = sqlite.Open(dsnWithWAL)
 	case "mysql":
-		dialector = mysql.Open(cfg.DSN)
-		slog.Info("连接到 MySQL 数据库")
-
+		// 示例 DSN: "user:pass@tcp(127.0.0.1:3306)/dbname?charset=utf8mb4&parseTime=True&loc=Local"
+		dialector = mysql.Open(dsn)
 	case "postgres":
-		dialector = postgres.Open(cfg.DSN)
-		slog.Info("连接到 PostgreSQL 数据库")
-
+		// 示例 DSN: "host=localhost user=gorm password=gorm dbname=gorm port=5432 sslmode=disable TimeZone=Asia/Shanghai"
+		dialector = postgres.Open(dsn)
 	default:
-		return nil, fmt.Errorf("不支持的数据库类型: %s", cfg.Type)
+		return nil, fmt.Errorf("不支持的数据库类型: %s", dbType)
 	}
 
-	db, err := gorm.Open(dialector, gormConfig)
+	db, err := gorm.Open(dialector, &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Info),
+	})
 	if err != nil {
-		return nil, fmt.Errorf("无法连接数据库 (%s): %w", cfg.Type, err)
+		return nil, fmt.Errorf("无法连接数据库 (%s): %w", dbType, err)
 	}
 
-	// 自动迁移
 	err = db.AutoMigrate(&File{}, &Report{})
 	if err != nil {
 		return nil, fmt.Errorf("无法迁移数据库: %w", err)
 	}
 
+	fmt.Printf("成功连接到 %s 数据库\n", dbType)
 	return db, nil
 }

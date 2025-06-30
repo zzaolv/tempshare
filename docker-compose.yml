@@ -1,81 +1,125 @@
-services:
-  # 前端服务 (Nginx)
-  tempshare-frontend:
-    build:
-      context: .
-      dockerfile: Dockerfile.frontend
-    container_name: tempshare-frontend
-    ports:
-      # 将容器的 80 端口映射到宿主机由环境变量定义的端口
-      # 默认映射到 8088 端口
-      - "${TEMPSHARE_HTTP_PORT:-8088}:80" 
-    # 不再需要挂载证书，因为 SSL/TLS 由 NPM 处理
-    # volumes:
-    #   - ./certs:/etc/nginx/ssl
-    depends_on:
-      - tempshare-backend
-    restart: unless-stopped
-    networks:
-      - tempshare-net
 
-  # 后端服务 (Go)
-  tempshare-backend:
+services:
+  # --- 后端服务 ---
+  backend:
     build:
-      context: .
-      dockerfile: Dockerfile.backend
+      context: ./backend
+      dockerfile: Dockerfile
     container_name: tempshare-backend
     restart: unless-stopped
     env_file:
-      - .env
+      - .env # 将 .env 文件中的所有变量注入到容器中
+    ports:
+      # 将宿主机的端口 (例如 8080) 映射到容器的 TEMPSHARE_SERVERPORT 端口
+      # 格式: "HOST_PORT:CONTAINER_PORT"
+      # 您可以修改 "8080" 为您希望在宿主机上使用的任何未被占用的端口
+      - "8080:${TEMPSHARE_SERVERPORT:-8080}"
     volumes:
+      # 持久化数据卷，用于存储 SQLite 数据库和本地文件
+      # ./data/sqlite 目录将挂载到容器内的 /app/data
+      # 这样即使容器被删除，数据也会保留在宿主机的 ./data 目录中
       - ./data:/app/data
     networks:
       - tempshare-net
-    # 如果使用 ClamAV，可以取消下面的注释
     # depends_on:
-    #   - clamav
+      # 如果使用 mysql 或 postgres，添加依赖以确保数据库先启动
+      # - mysql
+      # - postgres
+      # - clamav # 如果使用 clamav
+      # - minio # 如果使用 minio
+  
+  # --- 前端服务 (使用 nginx 托管静态文件) ---
+  frontend:
+    # 我们将创建一个简单的 Dockerfile 来构建前端并用 Nginx 服务
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+      args:
+        # 这个参数会让前端的 API 请求变成相对路径，
+        # 例如 /api/v1/..., 这样 NPM 就可以正确代理
+        VITE_DIRECT_API_BASE_URL: ""      
+    container_name: tempshare-frontend
+    restart: unless-stopped
+    # 前端不需要直接暴露端口，因为我们将通过 NPM 访问它
+    # 如果你想直接访问测试，可以取消注释
+    ports:
+      - "5173:80"
+    networks:
+      - tempshare-net
 
-  # 如果选择使用 MySQL (取消注释以启用)
-  # tempshare-db:
+  # --- (可选) 数据库服务 ---
+  # 如果您选择使用 MySQL 或 PostgreSQL，请取消注释对应的服务
+  
+  # mysql:
   #   image: mysql:8.0
   #   container_name: tempshare-mysql
-  #   command: --default-authentication-plugin=mysql_native_password
   #   restart: unless-stopped
   #   environment:
-  #     - MYSQL_ROOT_PASSWORD=mysqlpassword
-  #     - MYSQL_DATABASE=tempshare
+  #     MYSQL_ROOT_PASSWORD: your_strong_root_password
+  #     MYSQL_DATABASE: tempshare
+  #     MYSQL_USER: tempshare
+  #     MYSQL_PASSWORD: your_mysql_password # 应与 .env 中的密码一致
   #   volumes:
-  #     - tempshare_db_data:/var/lib/mysql
+  #     - mysql-data:/var/lib/mysql
   #   networks:
   #     - tempshare-net
 
-  # 如果选择使用 PostgreSQL (取消注释以启用)
-  # tempshare-db:
-  #   image: postgres:15
+  # postgres:
+  #   image: postgres:15-alpine
   #   container_name: tempshare-postgres
   #   restart: unless-stopped
   #   environment:
-  #     - POSTGRES_USER=user
-  #     - POSTGRES_PASSWORD=password
-  #     - POSTGRES_DB=tempshare
+  #     POSTGRES_USER: tempshare
+  #     POSTGRES_PASSWORD: your_pg_password # 应与 .env 中的密码一致
+  #     POSTGRES_DB: tempshare
   #   volumes:
-  #     - tempshare_db_data:/var/lib/postgresql/data
-  #   networks:
-  #     - tempshare-net
-  
-  # 如果需要 ClamAV 扫描 (取消注释以启用)
-  # clamav:
-  #   image: clamav/clamav:stable
-  #   container_name: tempshare-clamav
-  #   restart: unless-stopped
+  #     - postgres-data:/var/lib/postgresql/data
   #   networks:
   #     - tempshare-net
 
-# 定义网络
+  # --- (可选) 对象存储服务 ---
+  # 如果您选择使用 S3/MinIO, 取消注释
+#  minio:
+#    image: minio/minio:latest
+#    container_name: tempshare-minio
+#    restart: unless-stopped
+#    command: server /data --console-address ":9001"
+#    environment:
+#      MINIO_ROOT_USER: minioadmin # 对应 .env 中的 AccessKey
+#      MINIO_ROOT_PASSWORD: minioadmin # 对应 .env 中的 SecretKey
+#    ports:
+#      - "9000:9000" # S3 API 端口
+#      - "9001:9001" # MinIO 控制台端口
+#    volumes:
+#      - minio-data:/data
+#    networks:
+#      - tempshare-net
+#    healthcheck:
+#      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+#      interval: 30s
+#      timeout: 20s
+#      retries: 3
+
+
+  # --- (可选) 病毒扫描服务 ---
+  # clamav:
+  #   image: clamav/clamav:latest
+  #   container_name: tempshare-clamav
+  #   restart: unless-stopped
+  #   # 如果需要持久化病毒库，可以挂载卷
+  #   # volumes:
+  #   #   - clamav-db:/var/lib/clamav
+  #   networks:
+  #     - tempshare-net
+
+# --- 网络定义 ---
 networks:
   tempshare-net:
     driver: bridge
 
-# 定义持久化卷
-volumes:
-  tempshare_db_data: # 用于数据库数据
+# --- 持久化卷定义 ---
+# volumes:
+#  mysql-data:
+#  postgres-data:
+#  minio-data:
+#  clamav-db:

@@ -1,0 +1,10 @@
+.git
+*.db
+*.db-wal
+*.db-shm
+tempshare-files/
+config.json
+cert.pem
+key.pem
+go.work
+go.work.sum

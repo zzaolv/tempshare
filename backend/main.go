@@ -6,94 +6,69 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
-
-	"tempshare/storage" // 引入 storage
 )
 
 func main() {
-	// 1. 初始化日志
+	// --- 初始化和配置加载 ---
 	InitLogger()
 
-	// 2. 加载配置
 	if err := LoadConfig("config.json"); err != nil {
 		slog.Error("无法加载配置", "error", err)
 		os.Exit(1)
 	}
 
-	// --- 检查是否需要初始化 ---
-	if !AppConfig.IsInitialized() {
-		slog.Warn("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-		slog.Warn("!! 系统配置不完整，正在以 [初始化模式] 启动。")
-		slog.Warn("!! 请访问前端页面完成设置。")
-		slog.Warn("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-		runInitServer()
-		return
+	// --- 初始化检查 ---
+	if !AppConfig.Initialized {
+		runInitializationGuide()
+		os.Exit(1) // 退出，强制用户进行配置
 	}
 
-	// 3. 初始化存储提供者
-	storageProvider, err := initStorageProvider(AppConfig.Storage)
+	// --- 依赖初始化 ---
+	storage, err := NewFileStorage(AppConfig.Storage)
 	if err != nil {
-		slog.Error("存储提供者初始化失败", "error", err)
+		slog.Error("存储后端初始化失败", "error", err)
 		os.Exit(1)
 	}
 
-	// 4. 连接数据库
 	db, err := ConnectDatabase(AppConfig.Database)
 	if err != nil {
 		slog.Error("数据库初始化失败", "error", err)
 		os.Exit(1)
 	}
 
-	// 5. 初始化 Clamd 扫描器
-	clamdScanner, err := NewScanner(AppConfig.ClamdSocket)
+	// 从环境变量或配置文件读取 Clamd 地址
+	clamdSocket := os.Getenv("TEMPSHARE_CLAMDSOCKET")
+	if clamdSocket == "" && AppConfig.ClamdSocket != "" {
+		clamdSocket = AppConfig.ClamdSocket
+	}
+
+	clamdScanner, err := NewScanner(clamdSocket)
 	if err != nil {
 		slog.Warn("Clamd 扫描器初始化失败，文件扫描功能将不可用。", "error", err)
 	}
 
-	// 6. 启动后台清理任务
-	go CleanupExpiredFilesTask(db, storageProvider)
+	// --- 启动后台任务 ---
+	go CleanupExpiredFilesTask(db, storage)
 
-	// 7. 设置 Gin 路由
-	router := setupRouter(db, clamdScanner, storageProvider)
-
-	// 8. 启动服务器
-	serverAddr := ":" + AppConfig.ServerPort
-	slog.Info("后端服务已启动", "address", "http://localhost"+serverAddr)
-	if err := http.ListenAndServe(serverAddr, router); err != nil {
-		slog.Error("无法启动 HTTP 服务器", "error", err)
-		os.Exit(1)
-	}
-}
-
-func initStorageProvider(cfg StorageConfig) (storage.StorageProvider, error) {
-	switch cfg.Type {
-	case "local":
-		slog.Info("使用 [Local] 存储提供者", "path", cfg.Local.Path)
-		return storage.NewLocalStorage(cfg.Local.Path)
-	case "s3":
-		slog.Error("[S3] 存储提供者暂未实现")
-		return nil, fmt.Errorf("[S3] 存储提供者暂未实现")
-	case "webdav":
-		slog.Error("[WebDAV] 存储提供者暂未实现")
-		return nil, fmt.Errorf("[WebDAV] 存储提供者暂未实现")
-	default:
-		return nil, fmt.Errorf("不支持的存储类型: %s", cfg.Type)
-	}
-}
-
-func setupRouter(db *gorm.DB, scanner *ClamdScanner, sp storage.StorageProvider) *gin.Engine {
+	// --- 设置 Gin 路由 ---
 	router := gin.Default()
-	router.SetTrustedProxies(nil)
+	router.SetTrustedProxies(nil) // 信任所有代理，以便在Nginx后获取真实IP
 
-	// CORS 配置 (与之前基本相同)
+	// CORS 设置需要允许你的前端域名
+	// 在生产环境中，你应该将 AllowOrigins 设置为你的实际前端域名
+	// 例如: []string{"https://yourdomain.com"}
+	// 你也可以从环境变量中读取
+	allowedOrigins := os.Getenv("TEMPSHARE_CORS_ALLOWED_ORIGINS")
+	if allowedOrigins == "" {
+		allowedOrigins = "https://localhost:5173,http://localhost:5173" // 默认开发环境
+	}
+
 	corsConfig := cors.Config{
-		AllowOrigins:     []string{"http://localhost:5173", "http://localhost", "http://127.0.0.1"},
+		AllowOrigins:     []string{allowedOrigins},
 		AllowMethods:     []string{"GET", "POST", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "X-File-Name", "X-File-Original-Size", "X-File-Encrypted", "X-File-Salt", "X-File-Expires-In", "X-File-Download-Once", "X-Requested-With", "X-File-Verification-Hash"},
 		ExposeHeaders:    []string{"Content-Length", "Content-Disposition"},
@@ -105,18 +80,18 @@ func setupRouter(db *gorm.DB, scanner *ClamdScanner, sp storage.StorageProvider)
 	// 创建 Handler 实例，并注入依赖
 	fileHandler := &FileHandler{
 		DB:      db,
-		Scanner: scanner,
-		Storage: sp,
+		Scanner: clamdScanner,
+		Storage: storage,
 	}
 
+	// --- 健康检查路由 ---
+	router.GET("/health", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
+
+	// --- 注册API路由 ---
 	apiV1 := router.Group("/api/v1")
 	{
-		// 初始化状态检查端点，即使在完整模式下也保留，以便前端检查
-		apiV1.GET("/init/status", func(c *gin.Context) {
-			c.JSON(http.StatusOK, gin.H{"needsInit": false})
-		})
-
-		// 速率限制
 		if AppConfig.RateLimit.Enabled {
 			limiter := NewIPRateLimiter(
 				AppConfig.RateLimit.Requests,
@@ -137,54 +112,69 @@ func setupRouter(db *gorm.DB, scanner *ClamdScanner, sp storage.StorageProvider)
 			apiV1.POST("/report", fileHandler.HandleReport)
 		}
 
-		// 其他 GET 端点
 		apiV1.GET("/files/meta/:code", fileHandler.HandleGetFileMeta)
 		apiV1.GET("/files/public", fileHandler.HandleGetPublicFiles)
 		apiV1.GET("/preview/:code", fileHandler.HandlePreviewFile)
 		apiV1.GET("/preview/data-uri/:code", fileHandler.HandlePreviewDataURI)
 	}
 
-	// 下载路由
-	downloadGroup := router.Group("/data/:code")
+	dataGroup := router.Group("/data/:code")
 	{
-		downloadGroup.GET("", fileHandler.HandleDownloadFile)
-		downloadGroup.POST("", fileHandler.HandleDownloadFile)
+		dataGroup.GET("", fileHandler.HandleDownloadFile)
+		dataGroup.POST("", fileHandler.HandleDownloadFile)
 	}
 
-	return router
-}
-
-// runInitServer 启动一个简化的服务器，仅用于处理初始化
-func runInitServer() {
-	router := gin.Default()
-	router.Use(cors.Default()) // 允许所有跨域请求以便于设置
-
-	initHandler := &InitHandler{}
-
-	apiV1 := router.Group("/api/v1/init")
-	{
-		apiV1.GET("/status", initHandler.GetStatus)
-		apiV1.POST("/validate", initHandler.ValidateConfig)
-	}
-
-	// 捕获所有其他路由，提示需要初始化
-	router.NoRoute(func(c *gin.Context) {
-		// 如果是API请求，返回JSON
-		if strings.HasPrefix(c.Request.URL.Path, "/api/") {
-			c.JSON(http.StatusServiceUnavailable, gin.H{
-				"message": "服务正在等待初始化配置",
-				"code":    "NEEDS_INITIALIZATION",
-			})
-			return
-		}
-		// 其他情况可以返回一个简单的HTML页面或重定向，但前端会处理好
-		c.JSON(http.StatusOK, gin.H{"needsInit": true})
-	})
-
+	// --- 启动服务器 ---
 	serverAddr := ":" + AppConfig.ServerPort
-	slog.Info("初始化服务器已启动", "address", "http://localhost"+serverAddr)
-	if err := http.ListenAndServe(serverAddr, router); err != nil {
-		slog.Error("无法启动初始化服务器", "error", err)
+	slog.Info("后端服务准备启动...", "address", "http://localhost"+serverAddr, "storage", AppConfig.Storage.Type, "database", AppConfig.Database.Type)
+
+	// 在Docker环境中，TLS终止通常由反向代理（如Nginx）处理，
+	// 所以应用本身运行在HTTP模式下更简单、更通用。
+	// 我们移除 ListenAndServeTLS，改用 ListenAndServe。
+	// 您的NPM会处理HTTPS。
+	if err := router.Run(serverAddr); err != nil {
+		slog.Error("无法启动 HTTP 服务器", "error", err)
 		os.Exit(1)
 	}
+}
+
+// runInitializationGuide 打印设置指南
+func runInitializationGuide() {
+	fmt.Println("--- 闪传驿站 | TempShare 未初始化 ---")
+	fmt.Println("检测到这是首次运行或配置尚未完成。")
+	fmt.Println("\n请通过环境变量进行配置。创建一个 `.env` 文件并设置以下变量：")
+	fmt.Println("-----------------------------------------------------------------")
+	fmt.Println("# 基础设置")
+	fmt.Println("TEMPSHARE_INITIALIZED=true                 # 完成配置后，设置为 true 来启动服务")
+	fmt.Println("TEMPSHARE_SERVERPORT=8080                    # 应用监听的端口")
+	fmt.Println("TEMPSHARE_CORS_ALLOWED_ORIGINS=https://your-frontend.com # 允许的前端域名")
+
+	fmt.Println("\n# 数据库配置 (选择一种)")
+	fmt.Println("## SQLite (默认)")
+	fmt.Println("TEMPSHARE_DATABASE_TYPE=sqlite")
+	fmt.Println("TEMPSHARE_DATABASE_DSN=data/tempshare.db   # 推荐放在持久化卷中")
+	fmt.Println("\n## MySQL")
+	fmt.Println("# TEMPSHARE_DATABASE_TYPE=mysql")
+	fmt.Println("# TEMPSHARE_DATABASE_DSN='user:pass@tcp(mysql_host:3306)/dbname?charset=utf8mb4&parseTime=True&loc=Local'")
+	fmt.Println("\n## PostgreSQL")
+	fmt.Println("# TEMPSHARE_DATABASE_TYPE=postgres")
+	fmt.Println("# TEMPSHARE_DATABASE_DSN='host=postgres_host user=user password=pass dbname=tempshare port=5432 sslmode=disable'")
+
+	fmt.Println("\n# 存储配置 (选择一种)")
+	fmt.Println("## 本地存储 (默认)")
+	fmt.Println("TEMPSHARE_STORAGE_TYPE=local")
+	fmt.Println("TEMPSHARE_STORAGE_LOCALPATH=data/files     # 推荐放在持久化卷中")
+	fmt.Println("\n## S3/MinIO 对象存储")
+	fmt.Println("# TEMPSHARE_STORAGE_TYPE=s3")
+	fmt.Println("# TEMPSHARE_STORAGE_S3_ENDPOINT=http://minio:9000")
+	fmt.Println("# TEMPSHARE_STORAGE_S3_REGION=us-east-1")
+	fmt.Println("# TEMPSHARE_STORAGE_S3_BUCKET=tempshare-bucket")
+	fmt.Println("# TEMPSHARE_STORAGE_S3_ACCESSKEYID=your_access_key")
+	fmt.Println("# TEMPSHARE_STORAGE_S3_SECRETACCESSKEY=your_secret_key")
+	fmt.Println("# TEMPSHARE_STORAGE_S3_USEPATHSTYLE=true")
+
+	fmt.Println("\n# (可选) ClamAV 病毒扫描")
+	fmt.Println("# TEMPSHARE_CLAMDSOCKET=tcp://clamav_host:3310")
+	fmt.Println("-----------------------------------------------------------------")
+	fmt.Println("\n配置完成后，请确保 TEMPSHARE_INITIALIZED=true，然后重新启动服务。")
 }
