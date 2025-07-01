@@ -15,6 +15,8 @@ import HumanizedCountdown from '../components/HumanizedCountdown.tsx';
 import CodeInput from '../components/CodeInput';
 import type { CodeInputHandle } from '../components/CodeInput';
 import { useUploaderStore } from '../store/uploaderStore.ts';
+import useMediaQuery from '../hooks/useMediaQuery';
+import useOnClickOutside from '../hooks/useOnClickOutside';
 
 // (辅助函数 createProgressStream 和 formatBytes 保持不变)
 function createProgressStream(totalSize: number, onProgress: (progress: number) => void, onSpeedUpdate: (speed: string) => void): TransformStream<Uint8Array, Uint8Array> {
@@ -54,19 +56,37 @@ const formatBytes = (bytes: number, decimals = 2) => {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
 };
 
-const InteractiveUploader = ({ onAddFileClick, onAddFolderClick, onCodeSubmit }: {
+const InteractiveUploader = ({ onAddFileClick, onAddFolderClick, onCodeSubmit, onCodeComplete }: {
     onAddFileClick: () => void;
     onAddFolderClick: () => void;
     onCodeSubmit: (e: FormEvent) => void;
+    onCodeComplete: (value: string) => void;
 }) => {
     const { isInputMode, code, setIsInputMode, setCode } = useUploaderStore();
     const codeInputRef = useRef<CodeInputHandle>(null);
+    const uploaderRef = useRef<HTMLDivElement>(null);
     const [hoverTarget, setHoverTarget] = useState<'none' | 'code' | 'upload'>('none');
+    const [mobileUploadExpanded, setMobileUploadExpanded] = useState(false);
+    const isMobile = useMediaQuery('(max-width: 768px)');
+
+    useOnClickOutside(uploaderRef, () => {
+        if (isMobile && mobileUploadExpanded) {
+            setMobileUploadExpanded(false);
+        }
+    });
 
     const handleSwitchToInput = () => {
         setIsInputMode(true);
         setHoverTarget('none');
         setTimeout(() => codeInputRef.current?.focus(), 100);
+    };
+
+    const handleUploadClick = () => {
+        if (isMobile) {
+            setMobileUploadExpanded(!mobileUploadExpanded);
+        } else {
+            onAddFileClick();
+        }
     };
 
     const handleSwitchToUpload = () => setIsInputMode(false);
@@ -75,7 +95,7 @@ const InteractiveUploader = ({ onAddFileClick, onAddFolderClick, onCodeSubmit }:
     const cardBgClass = "bg-white/70 backdrop-blur-xl border border-white/30";
 
     return (
-        <div className="relative w-full max-w-[450px] h-20 flex justify-center items-center">
+        <div ref={uploaderRef} className="relative w-full max-w-[450px] h-20 flex justify-center items-center">
             <AnimatePresence mode="wait">
                 {isInputMode ? (
                     <motion.form
@@ -87,7 +107,7 @@ const InteractiveUploader = ({ onAddFileClick, onAddFolderClick, onCodeSubmit }:
                         transition={{ ...spring, duration: 0.3 }}
                     >
                         <motion.div className="flex-grow" initial={{ opacity: 0 }} animate={{ opacity: 1, transition: { delay: 0.15 } }} exit={{ opacity: 0, transition: { duration: 0.1 } }}>
-                            <CodeInput ref={codeInputRef} value={code} onChange={setCode} />
+                            <CodeInput ref={codeInputRef} value={code} onChange={setCode} onComplete={onCodeComplete} />
                         </motion.div>
                         <motion.button type="button" whileHover={{ scale: 1.15, rotate: 90 }} whileTap={{ scale: 0.9 }} onClick={handleSwitchToUpload} className="p-2 rounded-full text-slate-500 hover:bg-black/10 flex-shrink-0" aria-label="关闭" initial={{ opacity: 0 }} animate={{ opacity: 1, transition: { delay: 0.15 } }} exit={{ opacity: 0, transition: { duration: 0.1 } }}>
                             <X size={24} />
@@ -98,14 +118,14 @@ const InteractiveUploader = ({ onAddFileClick, onAddFolderClick, onCodeSubmit }:
                         key="button-group"
                         layoutId="uploader-container"
                         initial={{ opacity: 0, width: 280 }}
-                        animate={{ width: hoverTarget === 'code' ? 360 : 280, opacity: 1 }}
+                        animate={{ width: isMobile ? (mobileUploadExpanded ? 360 : 280) : (hoverTarget === 'code' ? 360 : 280), opacity: 1 }}
                         transition={spring}
                         className={`relative h-16 ${cardBgClass} rounded-full shadow-soft-xl flex items-center`}
-                        onMouseLeave={() => setHoverTarget('none')}
+                        onMouseLeave={() => !isMobile && setHoverTarget('none')}
                     >
                         <div
                             className="w-[120px] h-full flex-shrink-0 cursor-pointer flex items-center justify-center"
-                            onMouseEnter={() => setHoverTarget('code')}
+                            onMouseEnter={() => !isMobile && setHoverTarget('code')}
                             onClick={handleSwitchToInput}
                         >
                             <div className="relative w-full h-full flex items-center justify-center">
@@ -127,12 +147,12 @@ const InteractiveUploader = ({ onAddFileClick, onAddFolderClick, onCodeSubmit }:
                         
                         <div
                             className="relative flex-1 h-full cursor-pointer flex items-center justify-center"
-                            onClick={onAddFileClick}
+                            onClick={handleUploadClick}
+                            onMouseEnter={() => !isMobile && setHoverTarget('upload')}
                         >
                             <motion.div
                                 className="flex items-center justify-center gap-2 p-3 rounded-full"
-                                onMouseEnter={() => setHoverTarget('upload')}
-                                animate={{ opacity: hoverTarget === 'upload' ? 0 : 1 }}
+                                animate={{ opacity: (isMobile && mobileUploadExpanded) || (!isMobile && hoverTarget === 'upload') ? 0 : 1 }}
                             >
                                 <Plus className="text-brand-dark" size={24} />
                                 <span className="text-xl font-semibold text-brand-dark">上传</span>
@@ -140,7 +160,7 @@ const InteractiveUploader = ({ onAddFileClick, onAddFolderClick, onCodeSubmit }:
                         </div>
 
                         <AnimatePresence>
-                            {hoverTarget === 'upload' && (
+                            {((!isMobile && hoverTarget === 'upload') || (isMobile && mobileUploadExpanded)) && (
                                 <motion.div
                                     className="absolute inset-0 bg-brand-cyan/95 rounded-full flex z-10"
                                     initial={{ clipPath: 'inset(0 100% 0 0)' }}
@@ -497,6 +517,10 @@ const UploaderPage = () => {
         if (accessCodeInput.trim().length === 6) navigate(`/download/${accessCodeInput.trim().toUpperCase()}`);
     };
 
+    const handleCodeComplete = (completedCode: string) => {
+        navigate(`/download/${completedCode.trim().toUpperCase()}`);
+    };
+
     const renderContent = () => {
         switch(view) {
             case 'transferring':
@@ -645,6 +669,7 @@ const UploaderPage = () => {
                             onAddFileClick={openFileDialog}
                             onAddFolderClick={() => folderInputRef.current?.click()}
                             onCodeSubmit={handleAccessCodeSubmit}
+                            onCodeComplete={handleCodeComplete}
                         />
                     </motion.div>
                 );

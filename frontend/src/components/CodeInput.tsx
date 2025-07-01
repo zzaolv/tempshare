@@ -1,10 +1,11 @@
 // src/components/CodeInput.tsx
-import React, { useRef, useImperativeHandle, forwardRef } from 'react';
+import React, { useRef, useImperativeHandle, forwardRef, useEffect } from 'react';
 
 // 定义组件接收的 props 类型
 interface CodeInputProps {
   value: string;
   onChange: (value: string) => void;
+  onComplete?: (value: string) => void;
 }
 
 // 定义通过 ref 暴露给父组件的句柄类型
@@ -15,7 +16,7 @@ export interface CodeInputHandle {
 const CODE_LENGTH = 6;
 
 // 使用 forwardRef 来让父组件可以获取到内部的 input 的 ref
-const CodeInput = forwardRef<CodeInputHandle, CodeInputProps>(({ value, onChange }, ref) => {
+const CodeInput = forwardRef<CodeInputHandle, CodeInputProps>(({ value, onChange, onComplete }, ref) => {
   const inputRef = useRef<HTMLInputElement>(null);
 
   // useImperativeHandle 可以让我们自定义暴露给父组件的 ref 值
@@ -24,6 +25,13 @@ const CodeInput = forwardRef<CodeInputHandle, CodeInputProps>(({ value, onChange
       inputRef.current?.focus();
     },
   }));
+
+  // 当输入值变化时，检查是否已满6位
+  useEffect(() => {
+    if (value.length === CODE_LENGTH && onComplete) {
+      onComplete(value);
+    }
+  }, [value, onComplete]);
 
   // 点击容器时，自动聚焦到隐藏的输入框
   const handleContainerClick = () => {
