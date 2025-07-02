@@ -211,7 +211,7 @@ const PreviewModal = ({ file, onClose }: { file: FileMetadata, onClose: () => vo
     return (
         <AnimatePresence>
             <motion.div
-                className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 sm:p-6 md:p-8"
+                className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50"
                 variants={backdropVariants}
                 initial="hidden"
                 animate="visible"
@@ -219,7 +219,7 @@ const PreviewModal = ({ file, onClose }: { file: FileMetadata, onClose: () => vo
                 onClick={onClose}
             >
                 <motion.div
-                    className="relative w-full h-full max-w-5xl max-h-[90vh] bg-white rounded-xl shadow-2xl flex flex-col overflow-hidden"
+                    className="relative w-full h-full max-w-full max-h-full bg-white shadow-2xl flex flex-col overflow-hidden md:rounded-lg md:max-w-[95vw] md:max-h-[95vh]"
                     variants={modalVariants}
                     initial="hidden"
                     animate="visible"
