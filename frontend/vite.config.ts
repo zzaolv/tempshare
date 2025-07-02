@@ -17,6 +17,15 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       // HTTPS is still needed for local dev to match the backend protocol
+      // ✨✨✨ 修复点: 添加 Vite proxy 配置 ✨✨✨
+      proxy: {
+        // 将所有 /api/v1 的请求代理到后端服务器
+        '/api/v1': {
+          target: 'https://localhost:8080', // 后端服务器地址
+          changeOrigin: true, // 需要更改源，以避免 CORS 问题
+          secure: false, // 因为我们使用的是自签名证书，所以需要这个
+        },
+      }
     }
   };
 

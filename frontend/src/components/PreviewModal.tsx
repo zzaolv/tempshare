@@ -26,6 +26,32 @@ hljs.registerLanguage('json', json);
 hljs.registerLanguage('markdown', markdown);
 hljs.registerLanguage('plaintext', plaintext);
 
+// ✨✨✨ 修复点: 添加 Base64 -> UTF8 解码函数 ✨✨✨
+// 使用 TextDecoder API 来正确处理多字节字符 (例如中文)
+function base64ToUtf8(base64: string): string {
+    try {
+        const binStr = atob(base64);
+        const len = binStr.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+            bytes[i] = binStr.charCodeAt(i);
+        }
+        const decoder = new TextDecoder('utf-8');
+        return decoder.decode(bytes);
+    } catch (e) {
+        console.error('Failed to decode base64 to utf8:', e);
+        // Fallback for environments where TextDecoder might not be supported,
+        // or for strings that are not valid UTF-8.
+        try {
+            return decodeURIComponent(escape(atob(base64)));
+        } catch (e2) {
+            console.error('Fallback decoding failed:', e2);
+            return ''; // or handle error appropriately
+        }
+    }
+}
+
+
 export const previewableExtensions = {
     image: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'],
     video: ['mp4', 'webm', 'ogg'],
@@ -72,18 +98,16 @@ const PreviewModal = ({ file, onClose }: { file: FileMetadata, onClose: () => vo
         const fileExtension = file.filename.split('.').pop()?.toLowerCase() || '';
 
         const fetchContentForPreview = async () => {
-            setIsLoading(true);
-            setError(null);
-            
-            // 检查是否是需要特殊处理（通过 data-uri API）的类型
-            const needsDataUri = previewableExtensions.pdf.includes(fileExtension) || previewableExtensions.text.includes(fileExtension);
-            
-            // 如果不需要特殊处理，则直接返回，不发起 fetch 请求
-            if (!needsDataUri) {
+            // ✨✨✨ 修复点: 仅文本文件需要 fetch data-uri ✨✨✨
+            // PDF 和其他文件类型将直接使用流式 URL
+            if (!previewableExtensions.text.includes(fileExtension)) {
                 setIsLoading(false);
                 return;
             }
 
+            setIsLoading(true);
+            setError(null);
+            
             try {
                 const response = await fetch(dataUriPreviewUrl);
                 if (!response.ok) {
@@ -92,17 +116,12 @@ const PreviewModal = ({ file, onClose }: { file: FileMetadata, onClose: () => vo
                 }
 
                 const data = await response.json();
-
-                // 如果是文本，进行解码和高亮
-                if (previewableExtensions.text.includes(fileExtension)) {
-                    const base64Content = data.dataUri.split(',')[1];
-                    const textContent = atob(base64Content);
-                    const highlighted = hljs.highlightAuto(textContent).value;
-                    setPreviewContent(highlighted);
-                } else {
-                    // PDF 直接使用后端返回的完整 dataUri
-                    setPreviewContent(data.dataUri);
-                }
+                
+                // ✨✨✨ 修复点: 使用新的解码函数并进行高亮 ✨✨✨
+                const base64Content = data.dataUri.split(',')[1];
+                const textContent = base64ToUtf8(base64Content); // 使用新的解码函数
+                const highlighted = hljs.highlightAuto(textContent).value;
+                setPreviewContent(highlighted);
 
             } catch (err: any) {
                 console.error("预览加载失败:", err);
@@ -146,8 +165,10 @@ const PreviewModal = ({ file, onClose }: { file: FileMetadata, onClose: () => vo
             return <iframe src={officeViewerUrl} title={file.filename} className="w-full h-full border-0" />;
         }
         
+        // ✨✨✨ 修复点: PDF 直接使用代理的流式 URL ✨✨✨
+        // 这避免了 data-uri 的大小限制问题
         if (previewableExtensions.pdf.includes(fileExtension)) {
-            return previewContent ? <iframe src={previewContent} title={file.filename} className="w-full h-full border-0 bg-white" /> : null;
+            return <iframe src={proxiedPreviewUrl} title={file.filename} className="w-full h-full border-0 bg-white" />;
         }
         if (previewableExtensions.text.includes(fileExtension)) {
             return <pre className="w-full h-full overflow-auto p-4 bg-[#282c34]"><code className="hljs" dangerouslySetInnerHTML={{ __html: previewContent }}></code></pre>;
@@ -206,3 +227,4 @@ const PreviewModal = ({ file, onClose }: { file: FileMetadata, onClose: () => vo
 };
 
 export default PreviewModal;
+''
