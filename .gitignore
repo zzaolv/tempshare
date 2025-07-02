@@ -7,11 +7,11 @@
 backend/tempshare-files
 # Go build output
 /backend/server
+backend/data
 
 # Local database file
 /backend/*.db
 /backend/*.pem
-
 # Docker data volume on host
 /data
 

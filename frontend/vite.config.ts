@@ -16,21 +16,7 @@ export default defineConfig(({ mode }) => {
       'import.meta.env.VITE_DIRECT_API_BASE_URL': JSON.stringify(env.VITE_DIRECT_API_BASE_URL || '')
     },
     server: {
-      // ✨✨✨ 核心修复点: 确保代理目标是 HTTPS ✨✨✨
-      proxy: { 
-        // 代理所有 /api 的请求到后端 HTTPS 服务
-        '/api': {
-          target: 'https://localhost:8080', // 必须是 HTTPS
-          changeOrigin: true, // 必须，否则 CORS 可能会出问题
-          secure: false,      // 必须，因为我们用的是自签名证书，告诉 Node.js 不要验证它
-        },
-        // 代理所有 /data 的下载请求
-        '/data': {
-          target: 'https://localhost:8080', // 同样是 HTTPS
-          changeOrigin: true,
-          secure: false, 
-        }
-      }
+      // HTTPS is still needed for local dev to match the backend protocol
     }
   };
 

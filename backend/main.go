@@ -2,7 +2,6 @@
 package main
 
 import (
-	"crypto/tls" // ✨ 修复点: 导入 tls 包
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -110,18 +109,8 @@ func main() {
 	if _, err := os.Stat(certFile); err == nil {
 		if _, err := os.Stat(keyFile); err == nil {
 			// 证书文件存在，为本地开发启动 HTTPS 服务器
-			// 为解决 Vite 代理问题，我们在此处禁用 HTTP/2，强制使用 HTTP/1.1
-			slog.Info("检测到 cert.pem 和 key.pem，为本地开发启动禁用了 HTTP/2 的 HTTPS 服务器...", "address", "https://localhost"+serverAddr)
-
-			srv := &http.Server{
-				Addr:    serverAddr,
-				Handler: router,
-				TLSConfig: &tls.Config{
-					NextProtos: []string{"http/1.1"}, // 强制 HTTP/1.1 协议
-				},
-			}
-
-			if err := srv.ListenAndServeTLS(certFile, keyFile); err != nil {
+			slog.Info("检测到 cert.pem 和 key.pem，为本地开发启动 HTTPS 服务器...", "address", "https://localhost"+serverAddr)
+			if err := router.RunTLS(serverAddr, certFile, keyFile); err != nil {
 				slog.Error("无法启动 HTTPS 服务器", "error", err)
 				os.Exit(1)
 			}

@@ -7,7 +7,7 @@ export const PROXY_API_BASE_URL = ''; // Vite proxy will handle API calls in dev
 // 我们回退到 PROXY_API_BASE_URL ('')，让 Vite 的 proxy 生效。
 // 在生产构建时 (npm run build in Docker): vite.config.ts 会把这个变量替换为
 // docker-compose.yml 中 build.args 定义的值 (我们设置为空字符串 "" 或其他)。
-export const DIRECT_API_BASE_URL = import.meta.env.VITE_DIRECT_API_BASE_URL || PROXY_API_BASE_URL;
+export const DIRECT_API_BASE_URL = import.meta.env.VITE_DIRECT_API_BASE_URL || 'https://localhost:8080';
 
 // --- 类型定义 ---
 
