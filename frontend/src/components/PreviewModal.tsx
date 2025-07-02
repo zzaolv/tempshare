@@ -232,10 +232,10 @@ const PreviewModal = ({ file, onClose }: { file: FileMetadata, onClose: () => vo
                         onClick={onClose} 
                         whileHover={{ scale: 1.1, rotate: 90 }}
                         whileTap={{ scale: 0.9 }}
-                        className="absolute top-3 right-3 p-2 rounded-full bg-black/10 hover:bg-black/20 text-brand-dark transition-all duration-200"
+                        className="absolute top-4 right-4 p-2 rounded-full bg-gray-800/50 text-white hover:bg-gray-900/70 focus:outline-none focus:ring-2 focus:ring-white/50 transition-all"
                         aria-label="关闭预览"
                     >
-                        <X size={20} />
+                        <X size={24} />
                     </motion.button>
                 </motion.div>
             </motion.div>

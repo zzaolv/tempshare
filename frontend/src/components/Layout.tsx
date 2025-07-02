@@ -71,7 +71,7 @@ const Layout = () => {
     const shouldExpand = isSidebarExpanded || isHoveringSidebar;
 
     return (
-        <div className="flex flex-col h-screen h-dvh bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100">
+        <div className="flex flex-col min-h-screen min-h-dvh bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100">
             
             <InteractiveGradientBackground />
             
