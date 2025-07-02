@@ -1,5 +1,6 @@
 {
     "ServerPort": "8080",
+    "PublicHost": "http://localhost:8080",
     "ClamdSocket": "tcp://127.0.0.1:3310",
     "MaxUploadSizeMB": 5120,
     "RateLimit": {

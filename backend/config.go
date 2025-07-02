@@ -43,6 +43,7 @@ type WebDAVConfig struct {
 }
 type Config struct {
 	ServerPort         string          `mapstructure:"ServerPort"`
+	PublicHost         string          `mapstructure:"PublicHost"`
 	CORSAllowedOrigins string          `mapstructure:"CORS_ALLOWED_ORIGINS"`
 	MaxUploadSizeMB    int64           `mapstructure:"MaxUploadSizeMB"`
 	RateLimit          RateLimitConfig `mapstructure:"RateLimit"`
@@ -60,6 +61,7 @@ func LoadConfig(path string) error {
 	viper.AutomaticEnv()
 
 	viper.SetDefault("ServerPort", "8080")
+	viper.SetDefault("PublicHost", "")
 	viper.SetDefault("CORS_ALLOWED_ORIGINS", "https://localhost:5173")
 	viper.SetDefault("MaxUploadSizeMB", 1024)
 	viper.SetDefault("RateLimit.Enabled", true)

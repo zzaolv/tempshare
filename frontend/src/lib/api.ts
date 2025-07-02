@@ -66,3 +66,11 @@ export async function submitReport(accessCode: string, reason: string): Promise<
     });
     return res.json();
 }
+
+export async function fetchAppInfo(): Promise<{ publicHost: string }> {
+    const res = await fetch(`${DIRECT_API_BASE_URL}/api/v1/info`);
+    if (!res.ok) {
+        throw new Error("无法获取应用配置信息");
+    }
+    return res.json();
+}

@@ -14,7 +14,7 @@ import json from 'highlight.js/lib/languages/json';
 import markdown from 'highlight.js/lib/languages/markdown';
 import plaintext from 'highlight.js/lib/languages/plaintext';
 
-import { DIRECT_API_BASE_URL } from '../lib/api.ts';
+import { DIRECT_API_BASE_URL, fetchAppInfo } from '../lib/api.ts';
 import type { FileMetadata } from '../lib/api.ts';
 
 // 注册语言
@@ -84,6 +84,7 @@ const PreviewModal = ({ file, onClose }: { file: FileMetadata, onClose: () => vo
     const [previewContent, setPreviewContent] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [publicHost, setPublicHost] = useState('');
 
     const directDownloadUrl = `${DIRECT_API_BASE_URL}/data/${file.accessCode}`;
     const proxiedPreviewUrl = `/api/v1/preview/${file.accessCode}`;
@@ -94,6 +95,19 @@ const PreviewModal = ({ file, onClose }: { file: FileMetadata, onClose: () => vo
             if (e.key === 'Escape') onClose();
         };
         window.addEventListener('keydown', handleKeyDown);
+
+        const fileExtension = file.filename.split('.').pop()?.toLowerCase() || '';
+
+        const fetchAppConfig = async () => {
+            try {
+                const appInfo = await fetchAppInfo();
+                setPublicHost(appInfo.publicHost);
+            } catch (error) {
+                console.error("Failed to fetch app info:", error);
+            }
+        };
+
+        fetchAppConfig();
 
         const fileExtension = file.filename.split('.').pop()?.toLowerCase() || '';
 
@@ -161,7 +175,11 @@ const PreviewModal = ({ file, onClose }: { file: FileMetadata, onClose: () => vo
             );
         }
         if (previewableExtensions.office.includes(fileExtension)) {
-            const officeViewerUrl = `https://view.officeapps.live.com/op/view.aspx?src=${encodeURIComponent(directDownloadUrl)}`;
+            if (!publicHost) {
+                return <div className="flex items-center justify-center h-full text-brand-dark"><LoaderCircle className="animate-spin mr-2" /> 正在加载预览配置...</div>
+            }
+            const fullProxiedUrl = `${publicHost}${proxiedPreviewUrl}`;
+            const officeViewerUrl = `https://view.officeapps.live.com/op/view.aspx?src=${encodeURIComponent(fullProxiedUrl)}`;
             return <iframe src={officeViewerUrl} title={file.filename} className="w-full h-full border-0" allow="fullscreen" />;
         }
         

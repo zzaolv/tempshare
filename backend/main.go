@@ -92,6 +92,7 @@ func main() {
 		}
 		apiV1.GET("/files/meta/:code", fileHandler.HandleGetFileMeta)
 		apiV1.GET("/files/public", fileHandler.HandleGetPublicFiles)
+		apiV1.GET("/info", HandleGetAppInfo)
 		apiV1.GET("/preview/:code", fileHandler.HandlePreviewFile)
 		apiV1.GET("/preview/data-uri/:code", fileHandler.HandlePreviewDataURI)
 	}

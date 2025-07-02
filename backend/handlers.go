@@ -389,3 +389,10 @@ func (h *FileHandler) generateUniqueAccessCode(length int) (string, error) {
 	}
 	return "", errors.New("无法在20次尝试内生成唯一的便捷码")
 }
+
+// App Info Handler
+func HandleGetAppInfo(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"publicHost": AppConfig.PublicHost,
+	})
+}
