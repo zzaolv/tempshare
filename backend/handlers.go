@@ -276,26 +276,32 @@ func (h *FileHandler) HandlePreviewFile(c *gin.Context) {
 		return
 	}
 
-	contentType := http.DetectContentType(buffer[:n])
-
-	// For Office documents, we should not set Content-Disposition header to avoid download.
-	// Office preview service will handle it correctly.
 	ext := filepath.Ext(file.Filename)
-	officeExtensions := map[string]bool{
-		".ppt":  true,
-		".pptx": true,
-		".doc":  true,
-		".docx": true,
-		".xls":  true,
-		".xlsx": true,
+	var contentType string
+
+	// Map of Office extensions to their MIME types
+	officeMimeTypes := map[string]string{
+		".ppt":  "application/vnd.ms-powerpoint",
+		".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+		".doc":  "application/msword",
+		".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		".xls":  "application/vnd.ms-excel",
+		".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 	}
-	if _, isOffice := officeExtensions[ext]; !isOffice {
+
+	// Check if the file is an Office document
+	if mime, isOffice := officeMimeTypes[ext]; isOffice {
+		contentType = mime
+		// For Office documents, we do not set Content-Disposition
+	} else {
+		// For other files, detect content type and set Content-Disposition to inline
+		contentType = http.DetectContentType(buffer[:n])
 		c.Header("Content-Disposition", fmt.Sprintf(`inline; filename*=UTF-8''%s`, url.PathEscape(file.Filename)))
 	}
 
+	c.Header("Content-Type", contentType)
 	c.Header("X-Content-Type-Options", "nosniff")
 	c.Header("Content-Length", strconv.FormatInt(file.SizeBytes, 10))
-	c.Header("Content-Type", contentType)
 
 	// 先把已读的 buffer 写回去，再把剩下的流拷贝过去
 	c.Writer.Write(buffer[:n])
