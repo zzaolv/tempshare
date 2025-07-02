@@ -162,7 +162,7 @@ const PreviewModal = ({ file, onClose }: { file: FileMetadata, onClose: () => vo
         }
         if (previewableExtensions.office.includes(fileExtension)) {
             const officeViewerUrl = `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(directDownloadUrl)}`;
-            return <iframe src={officeViewerUrl} title={file.filename} className="w-full h-full border-0" />;
+            return <iframe src={officeViewerUrl} title={file.filename} className="w-full h-full border-0" allow="fullscreen" />;
         }
         
         // ✨✨✨ 修复点: PDF 直接使用代理的流式 URL ✨✨✨
