@@ -109,7 +109,6 @@ const PreviewModal = ({ file, onClose }: { file: FileMetadata, onClose: () => vo
 
         fetchAppConfig();
 
-        const fileExtension = file.filename.split('.').pop()?.toLowerCase() || '';
 
         const fetchContentForPreview = async () => {
             // ✨✨✨ 修复点: 仅文本文件需要 fetch data-uri ✨✨✨
