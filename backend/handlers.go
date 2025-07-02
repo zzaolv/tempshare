@@ -277,7 +277,22 @@ func (h *FileHandler) HandlePreviewFile(c *gin.Context) {
 	}
 
 	contentType := http.DetectContentType(buffer[:n])
-	c.Header("Content-Disposition", fmt.Sprintf(`inline; filename*=UTF-8''%s`, url.PathEscape(file.Filename)))
+
+	// For Office documents, we should not set Content-Disposition header to avoid download.
+	// Office preview service will handle it correctly.
+	ext := filepath.Ext(file.Filename)
+	officeExtensions := map[string]bool{
+		".ppt":  true,
+		".pptx": true,
+		".doc":  true,
+		".docx": true,
+		".xls":  true,
+		".xlsx": true,
+	}
+	if _, isOffice := officeExtensions[ext]; !isOffice {
+		c.Header("Content-Disposition", fmt.Sprintf(`inline; filename*=UTF-8''%s`, url.PathEscape(file.Filename)))
+	}
+
 	c.Header("X-Content-Type-Options", "nosniff")
 	c.Header("Content-Length", strconv.FormatInt(file.SizeBytes, 10))
 	c.Header("Content-Type", contentType)
