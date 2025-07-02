@@ -161,7 +161,7 @@ const PreviewModal = ({ file, onClose }: { file: FileMetadata, onClose: () => vo
             );
         }
         if (previewableExtensions.office.includes(fileExtension)) {
-            const officeViewerUrl = `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(directDownloadUrl)}`;
+            const officeViewerUrl = `https://view.officeapps.live.com/op/view.aspx?src=${encodeURIComponent(directDownloadUrl)}`;
             return <iframe src={officeViewerUrl} title={file.filename} className="w-full h-full border-0" allow="fullscreen" />;
         }
         
