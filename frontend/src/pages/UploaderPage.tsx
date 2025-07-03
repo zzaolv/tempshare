@@ -56,11 +56,13 @@ const formatBytes = (bytes: number, decimals = 2) => {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
 };
 
-const InteractiveUploader = ({ onAddFileClick, onAddFolderClick, onCodeSubmit, onCodeComplete }: {
+// ✨ InteractiveUploader 现在接收 isSubmittingCode prop
+const InteractiveUploader = ({ onAddFileClick, onAddFolderClick, onCodeSubmit, onCodeComplete, isSubmittingCode }: {
     onAddFileClick: () => void;
     onAddFolderClick: () => void;
     onCodeSubmit: (e: FormEvent) => void;
     onCodeComplete: (value: string) => void;
+    isSubmittingCode: boolean;
 }) => {
     const { isInputMode, code, setIsInputMode, setCode } = useUploaderStore();
     const codeInputRef = useRef<CodeInputHandle>(null);
@@ -107,7 +109,13 @@ const InteractiveUploader = ({ onAddFileClick, onAddFolderClick, onCodeSubmit, o
                         transition={{ ...spring, duration: 0.3 }}
                     >
                         <motion.div className="flex-grow" initial={{ opacity: 0 }} animate={{ opacity: 1, transition: { delay: 0.15 } }} exit={{ opacity: 0, transition: { duration: 0.1 } }}>
-                            <CodeInput ref={codeInputRef} value={code} onChange={setCode} onComplete={onCodeComplete} />
+                            <CodeInput 
+                                ref={codeInputRef} 
+                                value={code} 
+                                onChange={setCode} 
+                                onComplete={onCodeComplete} 
+                                isSubmitting={isSubmittingCode}
+                            />
                         </motion.div>
                         <motion.button type="button" whileHover={{ scale: 1.15, rotate: 90 }} whileTap={{ scale: 0.9 }} onClick={handleSwitchToUpload} className="p-2 rounded-full text-slate-500 hover:bg-black/10 flex-shrink-0" aria-label="关闭" initial={{ opacity: 0 }} animate={{ opacity: 1, transition: { delay: 0.15 } }} exit={{ opacity: 0, transition: { duration: 0.1 } }}>
                             <X size={24} />
@@ -286,11 +294,29 @@ const UploadSettingsPanel = ({
     );
 };
 
+const containerVariants = {
+    hidden: { opacity: 0 },
+    visible: {
+        opacity: 1,
+        transition: {
+            staggerChildren: 0.15,
+            delayChildren: 0.2,
+        },
+    },
+};
+
+const itemVariants = {
+    hidden: { y: 20, opacity: 0 },
+    visible: {
+        y: 0,
+        opacity: 1,
+        transition: { type: 'spring', stiffness: 100 } as const,
+    },
+};
+
 
 const UploaderPage = () => {
-    // ✨ 修正：移除了未使用的 `setAccessCodeInput`
     const { code: accessCodeInput, resetCode, setIsInputMode } = useUploaderStore();
-
     const [view, setView] = useState<'initial' | 'settings' | 'transferring' | 'success'>('initial');
     const [files, setFiles] = useState<File[]>([]);
     const folderInputRef = useRef<HTMLInputElement>(null);
@@ -309,6 +335,7 @@ const UploaderPage = () => {
     const [downloadOnce, setDownloadOnce] = useState(false);
     const [processedFilename, setProcessedFilename] = useState('');
     const [isProcessing, setIsProcessing] = useState(false);
+    const [isSubmittingCode, setIsSubmittingCode] = useState(false); // ✨ 新增状态
     const totalUploadSize = useMemo(() => files.reduce((acc, file) => acc + file.size, 0), [files]);
 
     const resetState = useCallback(() => {
@@ -336,6 +363,7 @@ const UploaderPage = () => {
         setIsInputMode(false);
         setProcessedFilename('');
         setIsProcessing(false);
+        setIsSubmittingCode(false); // ✨ 重置提交状态
     }, [resetCode, setIsInputMode]);
 
     useEffect(() => {
@@ -512,13 +540,27 @@ const UploaderPage = () => {
         });
     };
 
+    // ✨ 更新提交逻辑以包含加载状态
     const handleAccessCodeSubmit = (e: FormEvent) => {
         e.preventDefault();
-        if (accessCodeInput.trim().length === 6) navigate(`/download/${accessCodeInput.trim().toUpperCase()}`);
+        if (accessCodeInput.trim().length === 6 && !isSubmittingCode) {
+            setIsSubmittingCode(true);
+            setTimeout(() => {
+                navigate(`/download/${accessCodeInput.trim().toUpperCase()}`);
+                // 组件即将卸载，无需重置状态，但以防万一
+                setIsSubmittingCode(false);
+            }, 500);
+        }
     };
 
     const handleCodeComplete = (completedCode: string) => {
-        navigate(`/download/${completedCode.trim().toUpperCase()}`);
+        if (!isSubmittingCode) {
+            setIsSubmittingCode(true);
+            setTimeout(() => {
+                navigate(`/download/${completedCode.trim().toUpperCase()}`);
+                setIsSubmittingCode(false);
+            }, 500);
+        }
     };
 
     const renderContent = () => {
@@ -532,14 +574,13 @@ const UploaderPage = () => {
                 return (
                      <motion.div 
                         key="result" 
-                        initial={{ opacity: 0 }} 
-                        animate={{ opacity: 1 }}
+                        variants={containerVariants}
+                        initial="hidden"
+                        animate="visible"
                         className="w-full max-w-5xl mx-auto p-4 md:p-8 grid grid-cols-1 lg:grid-cols-5 gap-8 items-center"
                      >
                         <motion.div
-                            initial={{ x: -20, opacity: 0 }}
-                            animate={{ x: 0, opacity: 1 }}
-                            transition={{ duration: 0.5, ease: 'easeOut' }}
+                            variants={itemVariants}
                             className="lg:col-span-2 flex flex-col items-center justify-center text-center"
                         >
                             <UploadProgressCircle progress={uploadProgress} status={view} speed={uploadSpeed} />
@@ -550,7 +591,12 @@ const UploaderPage = () => {
                             
                             {isSuccess && (
                                 <div className="flex gap-4">
-                                    <motion.button onClick={resetState} whileHover={{scale: 1.05, filter: 'brightness(1.1)'}} whileTap={{scale:0.95}} className="bg-brand-cyan text-white font-bold py-3 px-6 rounded-lg transition-all flex items-center justify-center gap-2">
+                                    <motion.button 
+                                        onClick={resetState} 
+                                        whileHover={{scale: 1.05, filter: 'brightness(1.1)'}} 
+                                        whileTap={{scale:0.95, filter: 'brightness(0.95)'}} 
+                                        className="bg-brand-cyan text-white font-bold py-3 px-6 rounded-lg transition-all flex items-center justify-center gap-2 shadow-soft-lg"
+                                    >
                                         <Repeat size={18} /> 再传一次
                                     </motion.button>
                                 </div>
@@ -558,9 +604,7 @@ const UploaderPage = () => {
                         </motion.div>
 
                         <motion.div 
-                            initial={{ x: 20, opacity: 0 }}
-                            animate={{ x: 0, opacity: 1 }}
-                            transition={{ duration: 0.5, ease: 'easeOut', delay: 0.1 }}
+                            variants={itemVariants}
                             className="lg:col-span-3 bg-white/60 backdrop-blur-xl border border-white/20 rounded-2xl shadow-soft-xl p-6 text-brand-dark"
                         >
                              <h3 className="text-xl font-bold mb-1">传输预览</h3>
@@ -586,10 +630,15 @@ const UploaderPage = () => {
                              </div>
 
                             {isSuccess && shareDetails && (
-                                <div className="w-full space-y-4">
-                                    <h3 className="text-xl font-bold">链接或口令分享</h3>
+                                <motion.div 
+                                    className="w-full space-y-4"
+                                    variants={containerVariants}
+                                    initial="hidden"
+                                    animate="visible"
+                                >
+                                    <motion.h3 variants={itemVariants} className="text-xl font-bold">链接或口令分享</motion.h3>
                                     
-                                    <div className="relative">
+                                    <motion.div variants={itemVariants} className="relative">
                                         <input type="text" readOnly value={shareUrl} className="w-full bg-black/5 p-3 pr-24 rounded-lg border-2 border-transparent text-brand-dark truncate focus:outline-none focus:border-brand-cyan"/>
                                         <div className="absolute right-2 top-1/2 -translate-y-1/2 flex gap-1">
                                             <button 
@@ -598,18 +647,38 @@ const UploaderPage = () => {
                                             >
                                                 <QrCode size={20} />
                                             </button>
-                                            <button onClick={() => copyToClipboard(shareUrl, 'link')} className="p-2 rounded-md bg-slate-200 hover:bg-brand-mint transition-colors text-brand-dark">
-                                                {copiedLink ? <Check size={20}/> : <Copy size={20}/>}
+                                            <button onClick={() => copyToClipboard(shareUrl, 'link')} className="p-2 w-9 h-9 flex items-center justify-center rounded-md bg-slate-200 hover:bg-brand-mint transition-colors text-brand-dark">
+                                                <AnimatePresence mode="wait" initial={false}>
+                                                    {copiedLink ? (
+                                                        <motion.div key="check" initial={{ scale: 0.5, opacity: 0, rotate: -90 }} animate={{ scale: 1, opacity: 1, rotate: 0 }} exit={{ scale: 0.5, opacity: 0, rotate: 90 }} transition={{ type: 'spring', stiffness: 400, damping: 20 }}>
+                                                            <Check size={20}/>
+                                                        </motion.div>
+                                                    ) : (
+                                                        <motion.div key="copy" initial={{ scale: 0.5, opacity: 0, rotate: -90 }} animate={{ scale: 1, opacity: 1, rotate: 0 }} exit={{ scale: 0.5, opacity: 0, rotate: 90 }} transition={{ type: 'spring', stiffness: 400, damping: 20 }}>
+                                                            <Copy size={20}/>
+                                                        </motion.div>
+                                                    )}
+                                                </AnimatePresence>
                                             </button>
                                         </div>
-                                    </div>
+                                    </motion.div>
 
-                                    <div className="relative">
+                                    <motion.div variants={itemVariants} className="relative">
                                         <input type="text" readOnly value={shareDetails.accessCode} className="w-full bg-black/5 p-3 pr-14 rounded-lg border-2 border-transparent text-brand-dark font-mono tracking-widest text-center text-lg focus:outline-none focus:border-brand-cyan"/>
-                                        <button onClick={() => copyToClipboard(shareDetails.accessCode, 'code')} className="absolute right-2 top-1/2 -translate-y-1/2 p-2 rounded-md bg-slate-200 hover:bg-brand-mint transition-colors text-brand-dark">
-                                            {copiedCode ? <Check size={20}/> : <Copy size={20}/>}
+                                        <button onClick={() => copyToClipboard(shareDetails.accessCode, 'code')} className="absolute right-2 top-1/2 -translate-y-1/2 p-2 w-9 h-9 flex items-center justify-center rounded-md bg-slate-200 hover:bg-brand-mint transition-colors text-brand-dark">
+                                            <AnimatePresence mode="wait" initial={false}>
+                                                {copiedCode ? (
+                                                    <motion.div key="check-code" initial={{ scale: 0.5, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.5, opacity: 0 }}>
+                                                        <Check size={20}/>
+                                                    </motion.div>
+                                                ) : (
+                                                    <motion.div key="copy-code" initial={{ scale: 0.5, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.5, opacity: 0 }}>
+                                                        <Copy size={20}/>
+                                                    </motion.div>
+                                                )}
+                                            </AnimatePresence>
                                         </button>
-                                    </div>
+                                    </motion.div>
 
                                     <AnimatePresence>
                                         {showQRCode && (
@@ -634,7 +703,7 @@ const UploaderPage = () => {
                                             </motion.div>
                                         )}
                                     </AnimatePresence>
-                                </div>
+                                </motion.div>
                             )}
 
                              {!isSuccess && <p className="text-center text-brand-light">完成传输后，将在此处显示分享详情。</p>}
@@ -670,6 +739,7 @@ const UploaderPage = () => {
                             onAddFolderClick={() => folderInputRef.current?.click()}
                             onCodeSubmit={handleAccessCodeSubmit}
                             onCodeComplete={handleCodeComplete}
+                            isSubmittingCode={isSubmittingCode}
                         />
                     </motion.div>
                 );
@@ -707,7 +777,7 @@ const UploaderPage = () => {
                         <motion.div
                            initial={{ y: 20, scale: 0.9 }}
                            animate={{ y: 0, scale: 1 }}
-                           transition={{ type: 'spring', stiffness: 300, damping: 20 }}
+                           transition={{ type: 'spring', stiffness: 300, damping: 20 } as const}
                         >
                             <UploadCloud className="w-24 h-24 text-brand-cyan" />
                         </motion.div>

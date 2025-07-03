@@ -1,6 +1,7 @@
 // src/pages/DownloadPage.tsx
 import { useState, useEffect, useRef } from 'react';
 import { useParams } from 'react-router-dom';
+// ✨ 修复点: 重新导入了 LoaderCircle 用于解密按钮
 import { LoaderCircle, ServerCrash, Lock, KeyRound, ShieldAlert, FileText, Download, Eye, Image as ImageIcon, Film, Music, FileQuestion } from 'lucide-react';
 import streamSaver from 'streamsaver';
 import { createTimeline } from 'animejs'; 
@@ -9,8 +10,8 @@ import { fetchFileMetadata, DIRECT_API_BASE_URL } from '../lib/api';
 import type { FileMetadata } from '../lib/api';
 import HumanizedCountdown from '../components/HumanizedCountdown';
 import ScanStatusDisplay from '../components/ScanStatusDisplay';
-// ✨ 核心修复点 1: 导入 PreviewModal 和我们创建的预览类型常量
 import PreviewModal, { previewableExtensions } from '../components/PreviewModal';
+import DownloadPageSkeleton from '../components/DownloadPageSkeleton'; 
 
 const formatBytes = (bytes: number, decimals = 2) => {
     if (!+bytes) return '0 Bytes'
@@ -55,7 +56,6 @@ const DownloadPage = () => {
     const leftCardRef = useRef(null);
     const rightCardRef = useRef(null);
 
-    // ✨ 核心修复点 2: 使用导入的常量来动态判断文件是否可预览
     const isPreviewable = (() => {
         if (!meta || meta.isEncrypted || meta.scanStatus === 'infected') {
             return false;
@@ -96,26 +96,12 @@ const DownloadPage = () => {
     useEffect(() => {
         if (!isLoading && meta && leftCardRef.current && rightCardRef.current) {
             const tl = createTimeline();
-
             tl.add(
                 leftCardRef.current,
-                {
-                    opacity: [0, 1],
-                    translateX: [-50, 0],
-                    rotateZ: [-5, 0],
-                    duration: 800,
-                    easing: 'easeOutExpo',
-                }
-            )
-            .add(
+                { opacity: [0, 1], translateX: [-50, 0], rotateZ: [-5, 0], duration: 800, easing: 'easeOutExpo' }
+            ).add(
                 rightCardRef.current,
-                {
-                    opacity: [0, 1],
-                    translateX: [50, 0],
-                    rotateZ: [5, 0],
-                    duration: 800,
-                    easing: 'easeOutExpo',
-                },
+                { opacity: [0, 1], translateX: [50, 0], rotateZ: [5, 0], duration: 800, easing: 'easeOutExpo' },
                 '-=600'
             );
         }
@@ -180,10 +166,13 @@ const DownloadPage = () => {
     };
     
     const renderContent = () => {
-        if (isLoading) { return <div className="flex flex-col items-center justify-center h-80 gap-4"><LoaderCircle className="w-12 h-12 animate-spin text-brand-cyan" /><p>正在获取文件信息...</p></div>; }
+        if (isLoading) { 
+            return <DownloadPageSkeleton />;
+        }
         if (error) { return <div className="text-center p-8"><ServerCrash className="w-16 h-16 text-red-500 mx-auto mb-4" /><h2 className="text-2xl font-bold text-red-600">出错了</h2><p className="text-brand-light mt-1">{error}</p></div>; }
         if (!meta) return null;
 
+        // ✨✨✨ 核心修复点: 将这段完整的 JSX 从文件末尾移回到了这里 ✨✨✨
         const downloadOnceNotice = meta.downloadOnce && (
             <div className="bg-brand-yellow/30 border border-brand-yellow/50 text-yellow-800 px-4 py-2 rounded-lg text-sm flex items-center gap-3 my-4">
                 <ShieldAlert size={20} />
