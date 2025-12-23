@@ -1,0 +1,4680 @@
+.env
+```
+# --- TempShare .env Configuration ---
+# 复制此文件为 .env 并根据你的环境修改
+
+# --- 全局设置 ---
+# 完成所有配置后，设置为 true 来启动服务
+TEMPSHARE_INITIALIZED=true
+
+# 后端服务监听的端口
+TEMPSHARE_SERVERPORT=8080
+
+# 前端应用的URL，用于CORS。例如: https://share.yourdomain.com
+# 允许多个，用逗号分隔，不要有空格: https://a.com,https://b.com
+TEMPSHARE_CORS_ALLOWED_ORIGINS=https://localhost:5173,https://localhost:8080
+
+# --- 数据库配置 (选择一种并取消注释) ---
+
+# 1. SQLite (简单，适合单机部署)
+TEMPSHARE_DATABASE_TYPE=sqlite
+# DSN 是容器内的路径。我们将在 docker-compose 中把 ./data/sqlite 挂载到容器的 /app/data
+TEMPSHARE_DATABASE_DSN=data/tempshare.db
+
+# 2. MySQL
+# TEMPSHARE_DATABASE_TYPE=mysql
+# TEMPSHARE_DATABASE_DSN="tempshare:your_mysql_password@tcp(mysql:3306)/tempshare?charset=utf8mb4&parseTime=True&loc=Local"
+
+# 3. PostgreSQL
+# TEMPSHARE_DATABASE_TYPE=postgres
+# TEMPSHARE_DATABASE_DSN="host=postgres user=tempshare password=your_pg_password dbname=tempshare port=5432 sslmode=disable"
+
+
+# --- 存储配置 (选择一种并取消注释) ---
+
+# 1. 本地存储 (简单，适合单机部署)
+TEMPSHARE_STORAGE_TYPE=local
+# LocalPath 是容器内的路径。我们将在 docker-compose 中把 ./data/files 挂载到容器的 /app/data/files
+TEMPSHARE_STORAGE_LOCALPATH=data/files
+
+# 2. S3 / MinIO
+# TEMPSHARE_STORAGE_TYPE=s3
+# TEMPSHARE_STORAGE_S3_ENDPOINT=http://minio:9000
+# TEMPSHARE_STORAGE_S3_REGION=us-east-1
+# TEMPSHARE_STORAGE_S3_BUCKET=tempshare
+# TEMPSHARE_STORAGE_S3_USEPATHSTYLE=true
+# TEMPSHARE_STORAGE_S3_ACCESSKEYID=minioadmin
+# TEMPSHARE_STORAGE_S3_SECRETACCESSKEY=minioadmin
+
+# 3. WebDAV (例如 Nextcloud, Alist)
+# TEMPSHARE_STORAGE_TYPE=webdav
+# TEMPSHARE_STORAGE_WEBDAV_URL=https://your-webdav-server.com/remote.php/dav/files/username/
+# TEMPSHARE_STORAGE_WEBDAV_USERNAME=your_webdav_user
+# TEMPSHARE_STORAGE_WEBDAV_PASSWORD=your_webdav_password
+
+
+# --- (可选) ClamAV 病毒扫描 ---
+# 如果你部署了 ClamAV 容器，请取消注释
+# TEMPSHARE_CLAMDSOCKET=tcp://clamav:3310
+```
+
+docker-compose.yml
+```
+
+services:
+  # --- 后端服务 ---
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: tempshare-backend
+    restart: unless-stopped
+    env_file:
+      - .env # 将 .env 文件中的所有变量注入到容器中
+    ports:
+      # 将宿主机的端口 (例如 8080) 映射到容器的 TEMPSHARE_SERVERPORT 端口
+      # 格式: "HOST_PORT:CONTAINER_PORT"
+      # 您可以修改 "8080" 为您希望在宿主机上使用的任何未被占用的端口
+      - "8088:${TEMPSHARE_SERVERPORT:-8080}"
+    volumes:
+      # 持久化数据卷，用于存储 SQLite 数据库和本地文件
+      # ./data/sqlite 目录将挂载到容器内的 /app/data
+      # 这样即使容器被删除，数据也会保留在宿主机的 ./data 目录中
+      - ./data:/app/data
+    networks:
+      - tempshare-net
+    # depends_on:
+      # 如果使用 mysql 或 postgres，添加依赖以确保数据库先启动
+      # - mysql
+      # - postgres
+      # - clamav # 如果使用 clamav
+      # - minio # 如果使用 minio
+  
+  # --- 前端服务 (使用 nginx 托管静态文件) ---
+  frontend:
+    # 我们将创建一个简单的 Dockerfile 来构建前端并用 Nginx 服务
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+      args:
+        # 这个参数会让前端的 API 请求变成相对路径，
+        # 例如 /api/v1/..., 这样 NPM 就可以正确代理
+        VITE_DIRECT_API_BASE_URL: ""      
+    container_name: tempshare-frontend
+    restart: unless-stopped
+    # 前端不需要直接暴露端口，因为我们将通过 NPM 访问它
+    # 如果你想直接访问测试，可以取消注释
+    ports:
+      - "5173:80"
+    networks:
+      - tempshare-net
+
+  # --- (可选) 数据库服务 ---
+  # 如果您选择使用 MySQL 或 PostgreSQL，请取消注释对应的服务
+  
+  # mysql:
+  #   image: mysql:8.0
+  #   container_name: tempshare-mysql
+  #   restart: unless-stopped
+  #   environment:
+  #     MYSQL_ROOT_PASSWORD: your_strong_root_password
+  #     MYSQL_DATABASE: tempshare
+  #     MYSQL_USER: tempshare
+  #     MYSQL_PASSWORD: your_mysql_password # 应与 .env 中的密码一致
+  #   volumes:
+  #     - mysql-data:/var/lib/mysql
+  #   networks:
+  #     - tempshare-net
+
+  # postgres:
+  #   image: postgres:15-alpine
+  #   container_name: tempshare-postgres
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_USER: tempshare
+  #     POSTGRES_PASSWORD: your_pg_password # 应与 .env 中的密码一致
+  #     POSTGRES_DB: tempshare
+  #   volumes:
+  #     - postgres-data:/var/lib/postgresql/data
+  #   networks:
+  #     - tempshare-net
+
+  # --- (可选) 对象存储服务 ---
+  # 如果您选择使用 S3/MinIO, 取消注释
+#  minio:
+#    image: minio/minio:latest
+#    container_name: tempshare-minio
+#    restart: unless-stopped
+#    command: server /data --console-address ":9001"
+#    environment:
+#      MINIO_ROOT_USER: minioadmin # 对应 .env 中的 AccessKey
+#      MINIO_ROOT_PASSWORD: minioadmin # 对应 .env 中的 SecretKey
+#    ports:
+#      - "9000:9000" # S3 API 端口
+#      - "9001:9001" # MinIO 控制台端口
+#    volumes:
+#      - minio-data:/data
+#    networks:
+#      - tempshare-net
+#    healthcheck:
+#      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+#      interval: 30s
+#      timeout: 20s
+#      retries: 3
+
+
+  # --- (可选) 病毒扫描服务 ---
+  # clamav:
+  #   image: clamav/clamav:latest
+  #   container_name: tempshare-clamav
+  #   restart: unless-stopped
+  #   # 如果需要持久化病毒库，可以挂载卷
+  #   # volumes:
+  #   #   - clamav-db:/var/lib/clamav
+  #   networks:
+  #     - tempshare-net
+
+# --- 网络定义 ---
+networks:
+  tempshare-net:
+    driver: bridge
+
+# --- 持久化卷定义 ---
+# volumes:
+#  mysql-data:
+#  postgres-data:
+#  minio-data:
+#  clamav-db:
+```
+
+frontend/Dockerfile.prod
+```
+# --- Stage 1: Build ---
+# 使用 Node.js 镜像来构建前端项目
+FROM node:20-alpine AS builder
+
+# 设置工作目录
+WORKDIR /app
+
+# 声明一个构建参数，可以从 docker-compose.yml 传递进来
+ARG VITE_DIRECT_API_BASE_URL=""
+
+# 将构建参数设置为环境变量，以便 vite.config.ts 可以读取
+ENV VITE_DIRECT_API_BASE_URL=$VITE_DIRECT_API_BASE_URL
+
+# 复制 package.json 和 lock 文件
+COPY package*.json ./
+
+# 安装依赖
+RUN npm install
+
+# 复制所有前端代码
+COPY . .
+
+# ✨✨✨ 修复点: 移除 sed 命令 ✨✨✨
+# URL 的替换现在由 Vite 的 define 配置在构建时自动完成
+
+# 构建生产版本的静态文件
+RUN npm run build
+
+# --- Stage 2: Serve ---
+# 使用 Nginx 镜像来托管构建好的静态文件
+FROM nginx:1.25-alpine
+
+# 复制构建好的静态文件到 Nginx 的默认网站目录
+COPY --from=builder /app/dist /usr/share/nginx/html
+
+# 复制 Nginx 配置文件
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+
+# 暴露 80 端口
+EXPOSE 80
+
+# Nginx 默认会启动
+```
+
+frontend/eslint.config.js
+```
+import js from '@eslint/js'
+import globals from 'globals'
+import reactHooks from 'eslint-plugin-react-hooks'
+import reactRefresh from 'eslint-plugin-react-refresh'
+import tseslint from 'typescript-eslint'
+import { globalIgnores } from 'eslint/config'
+
+export default tseslint.config([
+  globalIgnores(['dist']),
+  {
+    files: ['**/*.{ts,tsx}'],
+    extends: [
+      js.configs.recommended,
+      tseslint.configs.recommended,
+      reactHooks.configs['recommended-latest'],
+      reactRefresh.configs.vite,
+    ],
+    languageOptions: {
+      ecmaVersion: 2020,
+      globals: globals.browser,
+    },
+  },
+])
+
+```
+
+frontend/index.html
+```
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>闪传驿站 | TempShare</title>
+
+    <!-- ✨✨✨ 核心修改点: 使用 Vite 兼容的绝对路径引用所有图标 ✨✨✨ -->
+    
+    <!-- 传统浏览器和快捷方式图标 -->
+    <link rel="shortcut icon" href="/favicon.ico" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="96x96" href="/favicon-96x96.png" />
+    
+    <!-- Apple 设备图标 -->
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-title" content="TempShare" />
+    
+    <!-- PWA 和 Android Chrome 图标 -->
+    <link rel="manifest" href="/site.webmanifest" />
+    
+    <!-- 主题色 (可选，但推荐) -->
+    <meta name="theme-color" content="#ffffff" />
+
+    <!-- Safari Pinned Tab (如果您的图标包里有) -->
+    <!-- <link rel="mask-icon" href="/safari-pinned-tab.svg" color="#2bd8fb"> -->
+    
+    <!-- End of icon links -->
+
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+```
+
+frontend/nginx.conf
+```
+server {
+    listen 80;
+    server_name localhost;
+
+    # 网站根目录
+    root /usr/share/nginx/html;
+    index index.html index.htm;
+
+    # 处理所有 location
+    location / {
+        # 尝试查找文件，如果找不到，则回退到 index.html
+        # 这对于单页应用 (SPA) 的路由至关重要
+        try_files $uri $uri/ /index.html;
+    }
+
+    # API 代理 (注意：这里我们不在 Nginx 中做代理)
+    # 代理是在 Vite 开发服务器中配置的，生产环境中
+    # 通常由更上层的反向代理 (如您的 NPM) 处理。
+    # 前端构建时会直接使用 API 的 URL。
+    # 在这个设置下，您的 NPM 应该将 /api/v1/... 的请求代理到后端容器。
+}
+```
+
+frontend/postcss.config.js
+```
+export default {
+  plugins: {
+    tailwindcss: {},
+    autoprefixer: {},
+  },
+}
+
+```
+
+frontend/tailwind.config.js
+```
+
+/** @type {import('tailwindcss').Config} */
+export default {
+  content: [
+    "./index.html",
+    "./src/**/*.{js,ts,jsx,tsx}",
+  ],
+  theme: {
+    extend: {
+      colors: {
+        'brand-bg': '#F5F5F5',
+        'brand-cyan': '#2BD8FB',
+        'brand-yellow': '#EEF864',
+        'brand-mint': '#64F8C5',
+        'brand-dark': '#2c3e50',
+        'brand-light': '#34495e',
+      },
+      boxShadow: {
+        'soft-lg': '0 10px 25px -3px rgba(0, 0, 0, 0.05), 0 4px 6px -2px rgba(0, 0, 0, 0.05)',
+        'soft-xl': '0 20px 40px -5px rgba(0, 0, 0, 0.08)',
+        'soft-2xl': '0 25px 50px -12px rgba(0, 0, 0, 0.1)',
+      },
+      backdropBlur: {
+        'xl': '24px',
+        '2xl': '40px',
+      },
+    },
+  },
+  plugins: [
+    require('@tailwindcss/forms'),
+  ],
+}
+
+```
+
+frontend/vite.config.ts
+```
+// frontend/vite.config.ts
+import { defineConfig, loadEnv } from 'vite';
+import type { UserConfig } from 'vite'; 
+import react from '@vitejs/plugin-react';
+import fs from 'fs';
+import path from 'path';
+
+export default defineConfig(({ mode }) => {
+  // 加载环境变量
+  const env = loadEnv(mode, process.cwd(), '');
+  
+  const config: UserConfig = {
+    plugins: [react()],
+    // define 用于在客户端代码中替换环境变量，确保生产构建时 API URL 正确
+    define: {
+      'import.meta.env.VITE_DIRECT_API_BASE_URL': JSON.stringify(env.VITE_DIRECT_API_BASE_URL || '')
+    },
+    server: {
+      // HTTPS is still needed for local dev to match the backend protocol
+      // ✨✨✨ 修复点: 添加 Vite proxy 配置 ✨✨✨
+      proxy: {
+        // 将所有 /api/v1 的请求代理到后端服务器
+        '/api/v1': {
+          target: 'https://localhost:8080', // 后端服务器地址
+          changeOrigin: true, // 需要更改源，以避免 CORS 问题
+          secure: false, // 因为我们使用的是自签名证书，所以需要这个
+        },
+      }
+    }
+  };
+
+  // 仅在开发模式下为 Vite 开发服务器启用 HTTPS
+  if (mode === 'development') {
+    if (!config.server) {
+      config.server = {};
+    }
+    try {
+      // 尝试从后端目录读取证书文件
+      const keyPath = path.resolve(__dirname, '../backend/key.pem');
+      const certPath = path.resolve(__dirname, '../backend/cert.pem');
+      
+      if (fs.existsSync(keyPath) && fs.existsSync(certPath)) {
+        config.server.https = {
+          key: fs.readFileSync(keyPath),
+          cert: fs.readFileSync(certPath),
+        };
+        console.log('Vite dev server is running in HTTPS mode.');
+      } else {
+          throw new Error('SSL certificates not found.');
+      }
+    } catch (e) {
+      console.warn('\nCould not find SSL certificates for Vite dev server. It will run in HTTP mode.');
+      console.warn('This will likely cause issues when connecting to the HTTPS backend.');
+      console.warn('➡️ To fix this, run `mkcert -install && mkcert localhost` in the `backend` directory.\n');
+      // 清除 https 配置，使其回退到 http
+      if (config.server) {
+        delete config.server.https;
+      }
+    }
+  }
+
+  return config;
+});
+```
+
+backend/.dockerignore
+```
+.git
+*.db
+*.db-wal
+*.db-shm
+tempshare-files/
+config.json
+cert.pem
+key.pem
+go.work
+go.work.sum
+```
+
+backend/cert.pem
+```
+-----BEGIN CERTIFICATE-----
+MIIEKjCCApKgAwIBAgIQW4TveeyndHRzUqxnKYCidTANBgkqhkiG9w0BAQsFADBz
+MR4wHAYDVQQKExVta2NlcnQgZGV2ZWxvcG1lbnQgQ0ExJDAiBgNVBAsMG0hQLUk3
+XHplYW9sQEhQLWk3IChhb2FvIGx2KTErMCkGA1UEAwwibWtjZXJ0IEhQLUk3XHpl
+YW9sQEhQLWk3IChhb2FvIGx2KTAeFw0yNTA3MDEwMzQ0NTlaFw0yNzEwMDEwMzQ0
+NTlaME8xJzAlBgNVBAoTHm1rY2VydCBkZXZlbG9wbWVudCBjZXJ0aWZpY2F0ZTEk
+MCIGA1UECwwbSFAtSTdcemVhb2xASFAtaTcgKGFvYW8gbHYpMIIBIjANBgkqhkiG
+9w0BAQEFAAOCAQ8AMIIBCgKCAQEA05CSKA/mvCwcaIjdvKn5qf51JbCeAYFUMCzE
+f/52GXeL1vS2ealdh0D1Hws9BFx29GZhPAc4Qszd7884IqC4XgWY57p/LbdY2NDN
+0t7SGbk8/4Opcjj6ZLZWq+94jWzX9/YSNcAgz9Y/Au9TybpGBz6Q39XZdEKWtIGt
+lGYg1kaw1ATT2wvYHv6kvj2lUlrOwqfx82/cmo7jyu1ilGD7rJ6EwCQ/Eu6tmGQq
+DzyFxgTIh3IymX4j7xT0nhTSEhZD0fwFOuB8DH2S1kdbGhP6l7s6yjvLti+F+HLg
+oG5TIu4rWZziUbQanTYQdOcjtBvB+aEQM/dqtxuaE4L0yqhdvwIDAQABo14wXDAO
+BgNVHQ8BAf8EBAMCBaAwEwYDVR0lBAwwCgYIKwYBBQUHAwEwHwYDVR0jBBgwFoAU
+xEa4iacPl6xrlTQUZgDiqfE1rc0wFAYDVR0RBA0wC4IJbG9jYWxob3N0MA0GCSqG
+SIb3DQEBCwUAA4IBgQAaDmYayFj5Et7/Bl4e0nhOGlZJNii5K7RtUsMUP4VfrumA
+Dt6lonLstS/1VO+SBLP7+MHfrC2RaUUPp/O/8NhjQ3pWT+vGPnNJ0l//kp8w/yjT
+XCVYUFsDAnzufQIC/Fkg+nZzkWVgbCzev9Ubss7cUuR7kEIx981VW0vWQHhNf/OE
+0a+Lkdbuk/iAjmPllGnHwDfl9gTYsU+TNsAoFcilCVgh4E5Z8oRICOQoDaXnYDGG
+cfZJwGtNhEHsnB/s7lQyjGZjbhAM361VJ4wS8lHQZRDxlxF6mWPbVScj0h45Akkq
+PluSl4oif0sRzW7jwtIRsG4BamUrx5ryus/9NOFrjE8OD6AYJ8eZ4xt6zepgvw3e
+AIfM4xmjWDdVBs2hsr2VNSg3/EtnvHmEvf3Yc8f2i/ox/SENaX+q18g50zHU3alv
+bAzzzPb1XDc5m7PMx8lUKN3aS5Dy0Q23IYNkWQmigyjEPLqyCHMyXCDIw+s4YyVr
+rXrlwfh4nGRqkawy3nU=
+-----END CERTIFICATE-----
+
+```
+
+backend/config.example.json
+```
+{
+    "ServerPort": "8080",
+    "PublicHost": "http://localhost:8080",
+    "ClamdSocket": "tcp://127.0.0.1:3310",
+    "MaxUploadSizeMB": 5120,
+    "RateLimit": {
+        "Enabled": true,
+        "Requests": 30,
+        "DurationMinutes": 10
+    },
+    "Database": {
+        "Type": "sqlite",
+        "DSN": "data/tempshare.db"
+    },
+    "Storage": {
+        "Type": "local",
+        "Local": {
+            "Path": "data/tempshare-files"
+        },
+        "S3": {
+            "Endpoint": "",
+            "Region": "us-east-1",
+            "Bucket": "",
+            "AccessKeyID": "",
+            "SecretAccessKey": "",
+            "UsePathStyle": false
+        },
+        "WebDAV": {
+            "URL": "",
+            "Username": "",
+            "Password": ""
+        }
+    }
+}
+```
+
+backend/config.go
+```
+// backend/config.go
+package main
+
+import (
+	"errors" // ✨ 导入 errors 包
+	"fmt"
+	"log/slog"
+	"os" // ✨ 导入 os 包
+	"strings"
+	"time"
+
+	"github.com/spf13/viper"
+)
+
+// --- 结构体定义保持不变 ---
+type RateLimitConfig struct {
+	Enabled         bool `mapstructure:"Enabled"`
+	Requests        int  `mapstructure:"Requests"`
+	DurationMinutes int  `mapstructure:"DurationMinutes"`
+}
+type DBConfig struct {
+	Type string `mapstructure:"Type"`
+	DSN  string `mapstructure:"DSN"`
+}
+type StorageConfig struct {
+	Type      string       `mapstructure:"Type"`
+	LocalPath string       `mapstructure:"LocalPath"`
+	S3        S3Config     `mapstructure:"S3"`
+	WebDAV    WebDAVConfig `mapstructure:"WebDAV"`
+}
+type S3Config struct {
+	Endpoint        string `mapstructure:"Endpoint"`
+	Region          string `mapstructure:"Region"`
+	Bucket          string `mapstructure:"Bucket"`
+	AccessKeyID     string `mapstructure:"AccessKeyID"`
+	SecretAccessKey string `mapstructure:"SecretAccessKey"`
+	UsePathStyle    bool   `mapstructure:"UsePathStyle"`
+}
+type WebDAVConfig struct {
+	URL      string `mapstructure:"URL"`
+	Username string `mapstructure:"Username"`
+	Password string `mapstructure:"Password"`
+}
+type Config struct {
+	ServerPort         string          `mapstructure:"ServerPort"`
+	PublicHost         string          `mapstructure:"PublicHost"`
+	CORSAllowedOrigins string          `mapstructure:"CORS_ALLOWED_ORIGINS"`
+	MaxUploadSizeMB    int64           `mapstructure:"MaxUploadSizeMB"`
+	RateLimit          RateLimitConfig `mapstructure:"RateLimit"`
+	Database           DBConfig        `mapstructure:"Database"`
+	Storage            StorageConfig   `mapstructure:"Storage"`
+	ClamdSocket        string          `mapstructure:"ClamdSocket"`
+	Initialized        bool            `mapstructure:"Initialized"`
+}
+
+var AppConfig *Config
+
+func LoadConfig(path string) error {
+	viper.SetEnvPrefix("TEMPSHARE")
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
+	viper.AutomaticEnv()
+
+	viper.SetDefault("ServerPort", "8080")
+	viper.SetDefault("PublicHost", "")
+	viper.SetDefault("CORS_ALLOWED_ORIGINS", "https://localhost:5173")
+	viper.SetDefault("MaxUploadSizeMB", 1024)
+	viper.SetDefault("RateLimit.Enabled", true)
+	viper.SetDefault("RateLimit.Requests", 30)
+	viper.SetDefault("RateLimit.DurationMinutes", 10)
+	viper.SetDefault("Database.Type", "sqlite")
+	viper.SetDefault("Database.DSN", "data/tempshare.db")
+	viper.SetDefault("Storage.Type", "local")
+	viper.SetDefault("Storage.LocalPath", "data/files")
+	viper.SetDefault("Storage.S3.UsePathStyle", true)
+	viper.SetDefault("ClamdSocket", "")
+	viper.SetDefault("Initialized", false)
+
+	viper.SetConfigFile(path)
+	viper.SetConfigType("json")
+
+	if err := viper.ReadInConfig(); err != nil {
+		// ✨✨✨ 核心修复点: 使用更健壮的错误检查 ✨✨✨
+		// 我们不仅检查 Viper 特定的错误，还检查通用的 "文件不存在" 错误。
+		// 这样无论 Viper 返回哪种错误类型，我们都能正确处理。
+		var configFileNotFoundError viper.ConfigFileNotFoundError
+		if errors.As(err, &configFileNotFoundError) || os.IsNotExist(err) {
+			slog.Info("配置文件 config.json 未找到，将完全依赖环境变量和默认值。这在 Docker 环境下是正常行为。")
+		} else {
+			// 如果是其他错误 (例如 JSON 格式无效)，这是一个严重错误，必须返回它
+			return fmt.Errorf("解析配置文件 %s 时发生致命错误: %w", path, err)
+		}
+	} else {
+		slog.Info("成功从文件加载配置", "path", path)
+	}
+
+	AppConfig = &Config{}
+	if err := viper.Unmarshal(&AppConfig); err != nil {
+		return fmt.Errorf("将配置解析到结构体时失败: %w", err)
+	}
+
+	slog.Info("配置加载完成",
+		slog.String("serverPort", AppConfig.ServerPort),
+		slog.String("dbType", AppConfig.Database.Type),
+		slog.String("storageType", AppConfig.Storage.Type),
+		slog.Bool("initialized", AppConfig.Initialized),
+		slog.String("allowedOrigins", AppConfig.CORSAllowedOrigins),
+	)
+
+	return nil
+}
+
+func (c *Config) GetRateLimitDuration() time.Duration {
+	return time.Duration(c.RateLimit.DurationMinutes) * time.Minute
+}
+
+```
+
+backend/config.json
+```
+{
+    "ServerPort": "8080",
+    "DatabasePath": "tempshare.db",
+    "ClamdSocket": "tcp://127.0.0.1:3310",
+    "MaxUploadSizeMB": 5120,
+    "RateLimit": {
+        "Enabled": true,
+        "Requests": 30,
+        "DurationMinutes": 10
+    }
+}
+```
+
+backend/database.go
+```
+// backend/database.go
+package main
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
+)
+
+// --- 模型定义 (无变化) ---
+const (
+	ScanStatusPending  = "pending"
+	ScanStatusClean    = "clean"
+	ScanStatusInfected = "infected"
+	ScanStatusError    = "error"
+	ScanStatusSkipped  = "skipped"
+)
+
+type File struct {
+	ID                string `gorm:"primaryKey" json:"-"`
+	AccessCode        string `gorm:"uniqueIndex,size:6" json:"accessCode"`
+	Filename          string `gorm:"size:255" json:"filename"`
+	SizeBytes         int64  `gorm:"not null" json:"sizeBytes"`
+	OriginalSizeBytes int64  `json:"originalSizeBytes"`
+	IsEncrypted       bool   `gorm:"default:false;index" json:"isEncrypted"`
+	EncryptionSalt    string `json:"encryptionSalt"`
+	VerificationHash  string `gorm:"size:64" json:"-"`
+	DownloadOnce      bool   `gorm:"default:false" json:"downloadOnce"`
+	// ✨ 核心修改点: StorageKey 现在是一个更通用的标识符，而不是文件路径
+	StorageKey string    `gorm:"unique;size:255" json:"-"`
+	ExpiresAt  time.Time `gorm:"index" json:"expiresAt"`
+	CreatedAt  time.Time `json:"createdAt"`
+	ScanStatus string    `gorm:"default:'pending';index" json:"scanStatus"`
+	ScanResult string    `gorm:"size:255" json:"scanResult"`
+}
+
+type Report struct {
+	gorm.Model
+	AccessCode string `json:"accessCode" binding:"required"`
+	Reason     string `json:"reason"`
+	ReporterIP string `json:"-"`
+}
+
+// --- 数据库连接 ---
+func ConnectDatabase(config DBConfig) (*gorm.DB, error) {
+	var dialector gorm.Dialector
+
+	dbType := strings.ToLower(config.Type)
+	dsn := config.DSN
+
+	switch dbType {
+	case "sqlite":
+		// 为 SQLite 特殊处理 DSN，确保 WAL 模式开启
+		dsnWithWAL := fmt.Sprintf("%s?_pragma=journal_mode=WAL", dsn)
+		dialector = sqlite.Open(dsnWithWAL)
+	case "mysql":
+		// 示例 DSN: "user:pass@tcp(127.0.0.1:3306)/dbname?charset=utf8mb4&parseTime=True&loc=Local"
+		dialector = mysql.Open(dsn)
+	case "postgres":
+		// 示例 DSN: "host=localhost user=gorm password=gorm dbname=gorm port=5432 sslmode=disable TimeZone=Asia/Shanghai"
+		dialector = postgres.Open(dsn)
+	default:
+		return nil, fmt.Errorf("不支持的数据库类型: %s", dbType)
+	}
+
+	db, err := gorm.Open(dialector, &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Info),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("无法连接数据库 (%s): %w", dbType, err)
+	}
+
+	err = db.AutoMigrate(&File{}, &Report{})
+	if err != nil {
+		return nil, fmt.Errorf("无法迁移数据库: %w", err)
+	}
+
+	fmt.Printf("成功连接到 %s 数据库\n", dbType)
+	return db, nil
+}
+
+```
+
+backend/Dockerfile
+```
+# backend/Dockerfile
+
+# --- Stage 1: Build ---
+# 使用官方的 Go 镜像作为构建环境
+FROM golang:1.24-alpine AS builder
+
+# ✨ 修复点: 为 SQLite 安装 C 语言构建工具链 (CGO 依赖)
+RUN apk add --no-cache build-base
+
+# 设置工作目录
+WORKDIR /app
+
+# 1. 单独复制 go.mod 和 go.sum
+COPY go.mod go.sum ./
+
+# 2. 使用 Go modules 的缓存来下载依赖项
+# 这比 `go mod download` 更高效，因为它只在 go.mod 变化时才重新下载
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
+
+# 3. 复制所有源代码到容器中
+COPY . .
+
+# 4. 构建应用，并利用 Go 的构建缓存
+# -o /app/tempshare 指定输出文件名为 tempshare
+# ✨ 修复点: 移除 CGO_ENABLED=0 来启用 CGO 编译, 这是 SQLite 驱动所必需的
+# -ldflags "-s -w" 去除调试信息，减小最终二进制文件的大小
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    GOOS=linux go build -o /app/tempshare -ldflags="-s -w" .
+
+# --- Stage 2: Final Image ---
+# 使用一个非常小的基础镜像 (alpine) 来构建最终镜像
+FROM alpine:latest
+
+# 设置工作目录
+WORKDIR /app
+
+# 从 builder 阶段复制构建好的二进制文件
+COPY --from=builder /app/tempshare .
+
+# Alpine 镜像可能需要 ca-certificates 来进行 HTTPS 调用 (例如连接 S3)
+# 还需要 tzdata 来正确处理时区
+RUN apk --no-cache add ca-certificates tzdata
+
+# 暴露我们在配置中设置的端口 (默认 8080)
+# 这只是元数据，实际端口映射在 docker-compose.yml 中完成
+EXPOSE 8080
+
+# 定义容器启动时执行的命令
+# 容器将直接运行我们的 Go 应用
+ENTRYPOINT ["/app/tempshare"]
+```
+
+backend/go.mod
+```
+module tempshare-backend
+
+go 1.24.4
+
+require (
+	github.com/aws/aws-sdk-go-v2 v1.36.5
+	github.com/aws/aws-sdk-go-v2/config v1.29.17
+	github.com/aws/aws-sdk-go-v2/credentials v1.17.70
+	github.com/aws/aws-sdk-go-v2/service/s3 v1.82.0
+	github.com/dutchcoders/go-clamd v0.0.0-20170520113014-b970184f4d9e
+	github.com/gin-contrib/cors v1.7.6
+	github.com/gin-gonic/gin v1.10.1
+	github.com/google/uuid v1.6.0
+	github.com/spf13/viper v1.20.1
+	github.com/studio-b12/gowebdav v0.10.0
+	golang.org/x/time v0.12.0
+	gorm.io/driver/mysql v1.6.0
+	gorm.io/driver/postgres v1.6.0
+	gorm.io/driver/sqlite v1.6.0
+	gorm.io/gorm v1.30.0
+)
+
+require (
+	filippo.io/edwards25519 v1.1.0 // indirect
+	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.6.11 // indirect
+	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.16.32 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/configsources v1.3.36 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.6.36 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/ini v1.8.3 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/v4a v1.3.36 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.12.4 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.7.4 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.12.17 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.18.17 // indirect
+	github.com/aws/aws-sdk-go-v2/service/sso v1.25.5 // indirect
+	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.30.3 // indirect
+	github.com/aws/aws-sdk-go-v2/service/sts v1.34.0 // indirect
+	github.com/aws/smithy-go v1.22.4 // indirect
+	github.com/bytedance/sonic v1.13.3 // indirect
+	github.com/bytedance/sonic/loader v0.2.4 // indirect
+	github.com/cloudwego/base64x v0.1.5 // indirect
+	github.com/fsnotify/fsnotify v1.8.0 // indirect
+	github.com/gabriel-vasile/mimetype v1.4.9 // indirect
+	github.com/gin-contrib/sse v1.1.0 // indirect
+	github.com/go-playground/locales v0.14.1 // indirect
+	github.com/go-playground/universal-translator v0.18.1 // indirect
+	github.com/go-playground/validator/v10 v10.26.0 // indirect
+	github.com/go-sql-driver/mysql v1.8.1 // indirect
+	github.com/go-viper/mapstructure/v2 v2.2.1 // indirect
+	github.com/goccy/go-json v0.10.5 // indirect
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/pgx/v5 v5.6.0 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
+	github.com/jinzhu/inflection v1.0.0 // indirect
+	github.com/jinzhu/now v1.1.5 // indirect
+	github.com/json-iterator/go v1.1.12 // indirect
+	github.com/klauspost/cpuid/v2 v2.2.10 // indirect
+	github.com/leodido/go-urn v1.4.0 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mattn/go-sqlite3 v1.14.22 // indirect
+	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
+	github.com/modern-go/reflect2 v1.0.2 // indirect
+	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
+	github.com/sagikazarmark/locafero v0.7.0 // indirect
+	github.com/sourcegraph/conc v0.3.0 // indirect
+	github.com/spf13/afero v1.12.0 // indirect
+	github.com/spf13/cast v1.7.1 // indirect
+	github.com/spf13/pflag v1.0.6 // indirect
+	github.com/subosito/gotenv v1.6.0 // indirect
+	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
+	github.com/ugorji/go/codec v1.3.0 // indirect
+	go.uber.org/atomic v1.9.0 // indirect
+	go.uber.org/multierr v1.9.0 // indirect
+	golang.org/x/arch v0.18.0 // indirect
+	golang.org/x/crypto v0.39.0 // indirect
+	golang.org/x/net v0.41.0 // indirect
+	golang.org/x/sync v0.15.0 // indirect
+	golang.org/x/sys v0.33.0 // indirect
+	golang.org/x/text v0.26.0 // indirect
+	google.golang.org/protobuf v1.36.6 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
+)
+
+```
+
+backend/handlers.go
+```
+// backend/handlers.go
+package main
+
+import (
+	"crypto/rand"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strconv"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"gorm.io/gorm"
+)
+
+// 临时的本地文件目录，仅用于病毒扫描
+var (
+	tempScanDir = filepath.Join(os.TempDir(), "tempshare-scans")
+)
+
+type VerificationPayload struct {
+	VerificationHash string `json:"verificationHash" binding:"required"`
+}
+
+type FileHandler struct {
+	DB      *gorm.DB
+	Scanner *ClamdScanner
+	Storage FileStorage // 使用抽象接口
+}
+
+func (h *FileHandler) HandleStreamUpload(c *gin.Context) {
+	// --- 应用上传大小限制 ---
+	maxUploadBytes := AppConfig.MaxUploadSizeMB * 1024 * 1024
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxUploadBytes)
+
+	// --- 读取 Headers (逻辑不变) ---
+	fileName, err := url.QueryUnescape(c.GetHeader("X-File-Name"))
+	if err != nil || fileName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "无效或缺失的文件名 (X-File-Name)"})
+		return
+	}
+	originalSize, err := strconv.ParseInt(c.GetHeader("X-File-Original-Size"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "无效或缺失的原始文件大小 (X-File-Original-Size)"})
+		return
+	}
+	isEncrypted, _ := strconv.ParseBool(c.GetHeader("X-File-Encrypted"))
+	salt := c.GetHeader("X-File-Salt")
+	verificationHash := c.GetHeader("X-File-Verification-Hash")
+	expiresInSeconds, _ := strconv.ParseInt(c.GetHeader("X-File-Expires-In"), 10, 64)
+	downloadOnce, _ := strconv.ParseBool(c.GetHeader("X-File-Download-Once"))
+
+	var expiresAt time.Time
+	if expiresInSeconds > 0 {
+		expiresAt = time.Now().Add(time.Duration(expiresInSeconds) * time.Second)
+	} else {
+		expiresAt = time.Now().Add(7 * 24 * time.Hour) // 默认值
+	}
+
+	// --- 文件存储与扫描逻辑 (核心修改) ---
+	storageKey := uuid.NewString()
+	var writtenBytes int64
+	var scanStatus, scanResult string
+
+	// 设计决策: 为保证扫描功能在任何存储后端下都可用，
+	// 我们先将文件流式传输到本地临时文件进行扫描，然后再上传到最终存储。
+	if !isEncrypted && h.Scanner != nil {
+		if err := os.MkdirAll(tempScanDir, os.ModePerm); err != nil {
+			slog.Error("无法创建临时扫描目录", "path", tempScanDir, "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "服务器内部错误"})
+			return
+		}
+		tempFilePath := filepath.Join(tempScanDir, storageKey)
+		tempFile, err := os.Create(tempFilePath)
+		if err != nil {
+			slog.Error("无法创建临时文件", "path", tempFilePath, "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "服务器内部错误"})
+			return
+		}
+
+		// 流式写入临时文件
+		writtenBytes, err = io.Copy(tempFile, c.Request.Body)
+		tempFile.Close() // 关闭文件以备扫描和读取
+		if err != nil {
+			os.Remove(tempFilePath)
+			// ... (处理 MaxBytesError 的逻辑不变)
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "文件上传中断"})
+			return
+		}
+
+		// 扫描临时文件
+		scanStatus, scanResult = h.Scanner.ScanFile(tempFilePath)
+
+		// 从临时文件重新打开并上传到最终存储
+		fileReader, err := os.Open(tempFilePath)
+		if err != nil {
+			os.Remove(tempFilePath)
+			slog.Error("无法重新打开临时文件以上传", "path", tempFilePath, "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "服务器内部错误"})
+			return
+		}
+		defer fileReader.Close()
+		defer os.Remove(tempFilePath) // 确保临时文件最终被删除
+
+		_, err = h.Storage.Save(storageKey, fileReader)
+		if err != nil {
+			slog.Error("无法保存文件到最终存储", "storageType", AppConfig.Storage.Type, "key", storageKey, "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "无法保存文件"})
+			return
+		}
+
+	} else {
+		// 如果是加密文件或扫描器不可用，直接流式传输到最终存储
+		var err error
+		writtenBytes, err = h.Storage.Save(storageKey, c.Request.Body)
+		if err != nil {
+			h.Storage.Delete(storageKey) // 尝试清理
+			// ... (处理 MaxBytesError 的逻辑)
+			slog.Error("无法保存文件到最终存储", "storageType", AppConfig.Storage.Type, "key", storageKey, "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "无法保存文件"})
+			return
+		}
+		// 根据情况设置扫描状态
+		if isEncrypted {
+			scanStatus, scanResult = ScanStatusClean, "端到端加密文件，服务器未扫描"
+		} else {
+			scanStatus, scanResult = ScanStatusSkipped, "扫描器不可用，已跳过"
+		}
+	}
+
+	// --- 数据库记录 (逻辑微调) ---
+	accessCode, err := h.generateUniqueAccessCode(6)
+	if err != nil {
+		h.Storage.Delete(storageKey) // 清理已上传的文件
+		slog.Error("无法生成分享码", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "无法生成分享码"})
+		return
+	}
+
+	newFile := File{
+		ID:                uuid.NewString(), // 使用独立的UUID作为主键
+		AccessCode:        accessCode,
+		Filename:          fileName,
+		SizeBytes:         writtenBytes,
+		OriginalSizeBytes: originalSize,
+		IsEncrypted:       isEncrypted,
+		EncryptionSalt:    salt,
+		VerificationHash:  verificationHash,
+		StorageKey:        storageKey, // 使用 storageKey
+		DownloadOnce:      downloadOnce,
+		ExpiresAt:         expiresAt,
+		CreatedAt:         time.Now(),
+		ScanStatus:        scanStatus,
+		ScanResult:        scanResult,
+	}
+
+	if err := h.DB.Create(&newFile).Error; err != nil {
+		h.Storage.Delete(storageKey) // 清理已上传的文件
+		slog.Error("无法保存文件记录到数据库", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "无法保存文件记录"})
+		return
+	}
+	slog.Info("上传成功", "clientIP", c.ClientIP(), "accessCode", accessCode, "key", storageKey, "scanStatus", scanStatus)
+	c.JSON(http.StatusCreated, gin.H{"accessCode": accessCode, "urlPath": fmt.Sprintf("/download/%s", accessCode)})
+}
+
+func (h *FileHandler) HandleDownloadFile(c *gin.Context) {
+	code := c.Param("code")
+	var file File
+	if err := h.DB.Where("access_code = ?", code).First(&file).Error; err != nil {
+		// ... (错误处理逻辑不变)
+		c.JSON(http.StatusNotFound, gin.H{"message": "文件不存在或已过期"})
+		return
+	}
+
+	// 检查过期 (在查询后再次检查，更保险)
+	if time.Now().After(file.ExpiresAt) {
+		c.JSON(http.StatusNotFound, gin.H{"message": "文件已过期"})
+		return
+	}
+
+	// 加密文件密码验证
+	if file.IsEncrypted {
+		if c.Request.Method != "POST" {
+			c.JSON(http.StatusMethodNotAllowed, gin.H{"message": "下载加密文件需要使用 POST 方法"})
+			return
+		}
+		var payload VerificationPayload
+		if err := c.ShouldBindJSON(&payload); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"message": "无效的验证请求"})
+			return
+		}
+		if payload.VerificationHash != file.VerificationHash {
+			slog.Warn("密码验证失败", "clientIP", c.ClientIP(), "accessCode", file.AccessCode)
+			c.JSON(http.StatusUnauthorized, gin.H{"message": "密码错误"})
+			return
+		}
+		slog.Info("密码验证成功，开始下载", "clientIP", c.ClientIP(), "accessCode", file.AccessCode)
+	}
+
+	// --- 从存储后端获取文件流并发送 (核心修改) ---
+	reader, err := h.Storage.Retrieve(file.StorageKey)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"message": "物理文件丢失"})
+		} else {
+			slog.Error("下载失败: 无法从存储后端获取文件", "key", file.StorageKey, "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"message": "无法获取文件"})
+		}
+		return
+	}
+	defer reader.Close()
+
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename*=UTF-8''%s`, url.PathEscape(file.Filename)))
+	c.Header("Content-Type", "application/octet-stream")
+	c.Header("Content-Length", strconv.FormatInt(file.SizeBytes, 10))
+
+	_, err = io.Copy(c.Writer, reader)
+	if err != nil {
+		slog.Error("流式传输文件到客户端时出错", "key", file.StorageKey, "clientIP", c.ClientIP(), "error", err)
+	}
+
+	h.handleDownloadOnce(c, file)
+}
+
+// 修改为 Handler 的方法，以便访问 h.Storage
+func (h *FileHandler) handleDownloadOnce(c *gin.Context, file File) {
+	if file.DownloadOnce && c.Writer.Status() == http.StatusOK {
+		// 使用 goroutine 异步执行，不阻塞下载响应
+		go func(f File) {
+			time.Sleep(2 * time.Second) // 等待一会确保连接关闭
+			slog.Info("阅后即焚: 文件已被下载，即将销毁", "filename", f.Filename, "key", f.StorageKey)
+			if err := h.Storage.Delete(f.StorageKey); err != nil {
+				slog.Error("阅后即焚错误: 删除存储对象失败", "key", f.StorageKey, "error", err)
+			}
+			if err := h.DB.Delete(&File{}, "id = ?", f.ID).Error; err != nil {
+				slog.Error("阅后即焚错误: 删除数据库记录失败", "id", f.ID, "error", err)
+			}
+		}(file)
+	}
+}
+
+func (h *FileHandler) HandlePreviewFile(c *gin.Context) {
+	code := c.Param("code")
+	var file File
+	if err := h.DB.Where("access_code = ? AND expires_at > ?", code, time.Now()).First(&file).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": "文件不存在或已过期"})
+		return
+	}
+	// ... (权限检查逻辑不变)
+	if file.IsEncrypted || file.ScanStatus == ScanStatusInfected {
+		c.JSON(http.StatusForbidden, gin.H{"message": "文件无法预览"})
+		return
+	}
+
+	reader, err := h.Storage.Retrieve(file.StorageKey)
+	if err != nil {
+		slog.Error("预览错误: 无法读取文件", "storageKey", file.StorageKey, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "无法读取文件内容"})
+		return
+	}
+	defer reader.Close()
+
+	// 需要读取一部分来判断 Content-Type
+	buffer := make([]byte, 512)
+	n, err := reader.Read(buffer)
+	if err != nil && err != io.EOF {
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "读取文件时出错"})
+		return
+	}
+
+	ext := filepath.Ext(file.Filename)
+	var contentType string
+
+	// Map of Office extensions to their MIME types
+	officeMimeTypes := map[string]string{
+		".ppt":  "application/vnd.ms-powerpoint",
+		".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+		".doc":  "application/msword",
+		".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		".xls":  "application/vnd.ms-excel",
+		".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+	}
+
+	// Check if the file is an Office document
+	if mime, isOffice := officeMimeTypes[ext]; isOffice {
+		contentType = mime
+		// For Office documents, we do not set Content-Disposition
+	} else {
+		// For other files, detect content type and set Content-Disposition to inline
+		contentType = http.DetectContentType(buffer[:n])
+		c.Header("Content-Disposition", fmt.Sprintf(`inline; filename*=UTF-8''%s`, url.PathEscape(file.Filename)))
+	}
+
+	c.Header("Content-Type", contentType)
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Content-Length", strconv.FormatInt(file.SizeBytes, 10))
+
+	// 先把已读的 buffer 写回去，再把剩下的流拷贝过去
+	c.Writer.Write(buffer[:n])
+	io.Copy(c.Writer, reader)
+}
+
+// 其他 Handler (HandleGetFileMeta, HandleGetPublicFiles, HandleReport, HandlePreviewDataURI, generateUniqueAccessCode) 基本不变
+// HandlePreviewDataURI 也需要修改为从 h.Storage 读取
+func (h *FileHandler) HandlePreviewDataURI(c *gin.Context) {
+	code := c.Param("code")
+	var file File
+
+	if err := h.DB.Where("access_code = ? AND expires_at > ?", code, time.Now()).First(&file).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": "文件不存在或已过期"})
+		return
+	}
+	if file.IsEncrypted || file.ScanStatus == ScanStatusInfected {
+		c.JSON(http.StatusForbidden, gin.H{"message": "文件无法预览"})
+		return
+	}
+
+	reader, err := h.Storage.Retrieve(file.StorageKey)
+	if err != nil {
+		slog.Error("Data URI 预览错误: 无法读取文件", "storageKey", file.StorageKey, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "无法读取文件内容"})
+		return
+	}
+	defer reader.Close()
+
+	fileBytes, err := io.ReadAll(reader)
+	if err != nil {
+		slog.Error("Data URI 预览错误: 读取流失败", "storageKey", file.StorageKey, "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "无法读取文件内容"})
+		return
+	}
+
+	base64Data := base64.StdEncoding.EncodeToString(fileBytes)
+	contentType := http.DetectContentType(fileBytes)
+	dataURI := fmt.Sprintf("data:%s;base64,%s", contentType, base64Data)
+
+	c.JSON(http.StatusOK, gin.H{
+		"dataUri": dataURI,
+	})
+}
+
+// --- 不变的 Handler 函数 ---
+func (h *FileHandler) HandleGetFileMeta(c *gin.Context) {
+	code := c.Param("code")
+	var file File
+	if err := h.DB.Where("access_code = ? AND expires_at > ?", code, time.Now()).First(&file).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"message": "文件不存在或已过期"})
+		return
+	}
+	c.JSON(http.StatusOK, file)
+}
+
+func (h *FileHandler) HandleGetPublicFiles(c *gin.Context) {
+	var files []File
+	result := h.DB.Select("access_code", "filename", "size_bytes", "expires_at", "is_encrypted").
+		Where("expires_at > ? AND is_encrypted = false AND download_once = false", time.Now()).
+		Order("created_at desc").Limit(20).Find(&files)
+	if result.Error != nil {
+		slog.Error("查询公开文件列表失败", "error", result.Error)
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "查询公开文件列表失败"})
+		return
+	}
+	c.JSON(http.StatusOK, files)
+}
+
+func (h *FileHandler) HandleReport(c *gin.Context) {
+	var reportData struct {
+		AccessCode string `json:"accessCode" binding:"required"`
+		Reason     string `json:"reason"`
+	}
+	if err := c.ShouldBindJSON(&reportData); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"message": "无效的举报请求"})
+		return
+	}
+	report := Report{AccessCode: reportData.AccessCode, Reason: reportData.Reason, ReporterIP: c.ClientIP()}
+	if err := h.DB.Create(&report).Error; err != nil {
+		slog.Error("无法提交举报到数据库", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"message": "无法提交举报，请稍后再试"})
+		return
+	}
+	slog.Info("收到举报", "clientIP", c.ClientIP(), "accessCode", report.AccessCode, "reason", report.Reason)
+	c.JSON(http.StatusOK, gin.H{"message": "您的举报已收到，感谢您的帮助！我们将会尽快处理。"})
+}
+
+const codeChars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+func (h *FileHandler) generateUniqueAccessCode(length int) (string, error) {
+	for i := 0; i < 20; i++ {
+		buffer := make([]byte, length)
+		if _, err := rand.Read(buffer); err != nil {
+			return "", err
+		}
+		for i := 0; i < length; i++ {
+			buffer[i] = codeChars[int(buffer[i])%len(codeChars)]
+		}
+		code := string(buffer)
+		var count int64
+		h.DB.Model(&File{}).Where("access_code = ?", code).Count(&count)
+		if count == 0 {
+			return code, nil
+		}
+	}
+	return "", errors.New("无法在20次尝试内生成唯一的便捷码")
+}
+
+// App Info Handler
+func HandleGetAppInfo(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"publicHost": AppConfig.PublicHost,
+	})
+}
+
+```
+
+backend/key.pem
+```
+-----BEGIN PRIVATE KEY-----
+MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQDTkJIoD+a8LBxo
+iN28qfmp/nUlsJ4BgVQwLMR//nYZd4vW9LZ5qV2HQPUfCz0EXHb0ZmE8BzhCzN3v
+zzgioLheBZjnun8tt1jY0M3S3tIZuTz/g6lyOPpktlar73iNbNf39hI1wCDP1j8C
+71PJukYHPpDf1dl0Qpa0ga2UZiDWRrDUBNPbC9ge/qS+PaVSWs7Cp/Hzb9yajuPK
+7WKUYPusnoTAJD8S7q2YZCoPPIXGBMiHcjKZfiPvFPSeFNISFkPR/AU64HwMfZLW
+R1saE/qXuzrKO8u2L4X4cuCgblMi7itZnOJRtBqdNhB05yO0G8H5oRAz92q3G5oT
+gvTKqF2/AgMBAAECggEACKAsVVXQontp7RkncTm85CFrxU2eI5GSTSSGHnHRfthQ
+60Ku7ebp2UnctJdQtYzPjMdfz4K72H1hzxUzxLWozqyLv2brKIIBLVXWDnLnPgU/
+Z2uGzRFlpBWLExeAYsO9Sm7N70MWE2M4znXThLYDhOgYIAgoBYVxf4qJ+TLww8ur
+COu62b7eaxZamytQjFNSaHbshbyRFZ0SpbBwrbtB8N9cXWBOvKWbHiKZJTtfQFOa
+v6aBqLHkm3wUAPCIGanCx/zAc6QidT8XE16Ox4PsKcN2emS6fdgzsRLaMrM/EgQn
+/P2PQwBXG2t2l+nWzlzUzuS2pp2I4EdLEjuNvXJ/AQKBgQD1f2pgupEYpFYAypW2
+o2J2SuHrNo3iU2NLoE+3QwczrnszQQyOaK34+JHrHfRTYqfETDn3GWNiHK/je+zT
++0rThi09F28OoJlzTt5+CWy4FDkGm8vyzj2g/DjkH6b38baMEld7M/vmqE4+Z9ZX
+w2cW33oQdGuQsQp8VLlrn8ClVwKBgQDcnYk54jsdkTIPHHpayjEve3pvTBuTXM7T
+r690TqyXT0I94YTmnApPF5vlSDn4jHqdNoAnphZqsiMzJMmeEgR/dT3goLRKzFFQ
+WOHCbF7cB2B0xR+qq+cEScd4I4O8y7wHaHbQ1bWzmK7ouLZ56LFMeEgxP+loy8yU
+ZsZ4+dQh2QKBgFEP6YhXEmIYoW1Rd23/NRvqTf7k3KTG9BqcrLXOpCokivm5mPPN
+DOUQ7t273llKUis3IEy/TVmwL0PmP6UfbO27eGSbwEgML58rg7wKUKPXyZytBQL/
+psnpfr+U1AU7AxPtWoWL/LmFCZEBqH0CQKAE2sFkL8BvNQ8oyrEG5w2xAoGAOUDp
+DAyaKuIzi5hoaIdwnFH/REMMJQJA6s79ScHhKKN5HXYZd3+nbT9DRg2ofch3SbWL
+LL79slLor60sZclnQWy70j/iikbcE239qOdW9uMzNRqzTSevnH1JNvSAi86TzZhe
+vXO45BML0XmeYaTx3laY5a8gdAHv5dOGTn8HfoECgYAj757RObBPt4Q0r+C+JoJq
+nkfW9HrZETqwpFqbc61gIaj3nzndrSznGpXJ5trlgEirbQz51mJX+pxkNPTMM24z
+4MaLEGOPlBnkbBx1vWwuvH0duoxxmGPdSL4lUG+XGqqxvdA1Z92Nbk+BhXChNuNo
+Sb1q8h1v8EhNe3z0daKPUg==
+-----END PRIVATE KEY-----
+
+```
+
+backend/logger.go
+```
+// backend/logger.go
+package main
+
+import (
+	"log/slog"
+	"os"
+)
+
+// InitLogger 初始化一个全局的 slog JSON 格式记录器
+func InitLogger() {
+	handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+		Level: slog.LevelInfo, // 你可以根据环境调整日志级别，例如 LevelDebug
+	})
+	logger := slog.New(handler)
+	slog.SetDefault(logger)
+}
+
+```
+
+backend/main.go
+```
+// backend/main.go
+package main
+
+import (
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/gin-contrib/cors"
+	"github.com/gin-gonic/gin"
+)
+
+func main() {
+	InitLogger()
+
+	if err := LoadConfig("config.json"); err != nil {
+		slog.Error("加载配置时发生严重错误，程序无法启动", "error", err)
+		os.Exit(1)
+	}
+
+	if !AppConfig.Initialized {
+		runInitializationGuide()
+		os.Exit(1)
+	}
+
+	storage, err := NewFileStorage(AppConfig.Storage)
+	if err != nil {
+		slog.Error("存储后端初始化失败", "error", err)
+		os.Exit(1)
+	}
+	db, err := ConnectDatabase(AppConfig.Database)
+	if err != nil {
+		slog.Error("数据库初始化失败", "error", err)
+		os.Exit(1)
+	}
+	clamdScanner, err := NewScanner(AppConfig.ClamdSocket)
+	if err != nil {
+		slog.Warn("Clamd 扫描器初始化失败，文件扫描功能将不可用。", "error", err)
+	}
+	go CleanupExpiredFilesTask(db, storage)
+
+	// --- Gin 路由器设置 ---
+	gin.SetMode(gin.DebugMode)
+	if os.Getenv("GIN_MODE") == "release" {
+		gin.SetMode(gin.ReleaseMode)
+	}
+
+	router := gin.Default()
+	router.SetTrustedProxies(nil)
+
+	var allowedOrigins []string
+	if AppConfig.CORSAllowedOrigins != "" {
+		allowedOrigins = strings.Split(AppConfig.CORSAllowedOrigins, ",")
+	}
+	slog.Info("CORS Allowed Origins", "origins", allowedOrigins)
+
+	corsConfig := cors.Config{
+		AllowOrigins:     allowedOrigins,
+		AllowMethods:     []string{"GET", "POST", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "X-File-Name", "X-File-Original-Size", "X-File-Encrypted", "X-File-Salt", "X-File-Expires-In", "X-File-Download-Once", "X-Requested-With", "X-File-Verification-Hash"},
+		ExposeHeaders:    []string{"Content-Length", "Content-Disposition"},
+		AllowCredentials: true,
+		MaxAge:           12 * time.Hour,
+	}
+	router.Use(cors.New(corsConfig))
+
+	fileHandler := &FileHandler{
+		DB:      db,
+		Scanner: clamdScanner,
+		Storage: storage,
+	}
+
+	router.GET("/health", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"status": "ok"}) })
+	apiV1 := router.Group("/api/v1")
+	{
+		if AppConfig.RateLimit.Enabled {
+			limiter := NewIPRateLimiter(AppConfig.RateLimit.Requests, AppConfig.GetRateLimitDuration())
+			uploadAndReportGroup := apiV1.Group("/")
+			uploadAndReportGroup.Use(limiter.RateLimitMiddleware())
+			{
+				uploadAndReportGroup.POST("/uploads/stream-complete", fileHandler.HandleStreamUpload)
+				uploadAndReportGroup.POST("/report", fileHandler.HandleReport)
+			}
+			slog.Info("已启用上传/举报速率限制", "requests", AppConfig.RateLimit.Requests, "durationMinutes", AppConfig.RateLimit.DurationMinutes)
+		} else {
+			slog.Warn("速率限制已禁用")
+			apiV1.POST("/uploads/stream-complete", fileHandler.HandleStreamUpload)
+			apiV1.POST("/report", fileHandler.HandleReport)
+		}
+		apiV1.GET("/files/meta/:code", fileHandler.HandleGetFileMeta)
+		apiV1.GET("/files/public", fileHandler.HandleGetPublicFiles)
+		apiV1.GET("/info", HandleGetAppInfo)
+		apiV1.GET("/preview/:code", fileHandler.HandlePreviewFile)
+		apiV1.GET("/preview/data-uri/:code", fileHandler.HandlePreviewDataURI)
+	}
+	dataGroup := router.Group("/data/:code")
+	{
+		dataGroup.GET("", fileHandler.HandleDownloadFile)
+		dataGroup.POST("", fileHandler.HandleDownloadFile)
+	}
+
+	serverAddr := ":" + AppConfig.ServerPort
+
+	// ✨✨✨ 核心修复点: 区分本地开发 (HTTPS) 和生产 (HTTP) 启动方式 ✨✨✨
+	certFile := "cert.pem"
+	keyFile := "key.pem"
+	if _, err := os.Stat(certFile); err == nil {
+		if _, err := os.Stat(keyFile); err == nil {
+			// 证书文件存在，为本地开发启动 HTTPS 服务器
+			slog.Info("检测到 cert.pem 和 key.pem，为本地开发启动 HTTPS 服务器...", "address", "https://localhost"+serverAddr)
+			if err := router.RunTLS(serverAddr, certFile, keyFile); err != nil {
+				slog.Error("无法启动 HTTPS 服务器", "error", err)
+				os.Exit(1)
+			}
+			return
+		}
+	}
+
+	// 证书文件不存在，启动标准的 HTTP 服务器 (用于 Docker 或其他生产环境)
+	slog.Info("未找到证书文件，启动 HTTP 服务器...", "address", "http://localhost"+serverAddr)
+	if err := router.Run(serverAddr); err != nil {
+		slog.Error("无法启动 HTTP 服务器", "error", err)
+		os.Exit(1)
+	}
+}
+
+func runInitializationGuide() {
+	fmt.Println("--- 闪传驿站 | TempShare 未初始化 ---")
+	fmt.Println("检测到这是首次运行或配置尚未完成。")
+	fmt.Println("\n请通过环境变量进行配置。创建一个 `.env` 文件并设置以下变量：")
+	fmt.Println("-----------------------------------------------------------------")
+	fmt.Println("# 基础设置")
+	fmt.Println("TEMPSHARE_INITIALIZED=true                 # 完成配置后，设置为 true 来启动服务")
+	fmt.Println("TEMPSHARE_SERVERPORT=8080                    # 应用监听的端口")
+	fmt.Println("TEMPSHARE_CORS_ALLOWED_ORIGINS=https://your-frontend.com # 允许的前端域名, 多个用逗号隔开")
+	fmt.Println("\n# 数据库配置 (选择一种)")
+	fmt.Println("## SQLite (默认)")
+	fmt.Println("TEMPSHARE_DATABASE_TYPE=sqlite")
+	fmt.Println("TEMPSHARE_DATABASE_DSN=data/tempshare.db   # 推荐放在持久化卷中")
+	fmt.Println("\n# 存储配置 (选择一种)")
+	fmt.Println("## 本地存储 (默认)")
+	fmt.Println("TEMPSHARE_STORAGE_TYPE=local")
+	fmt.Println("TEMPSHARE_STORAGE_LOCALPATH=data/files     # 推荐放在持久化卷中")
+	fmt.Println("\n# (可选) ... 其他配置项 ...")
+	fmt.Println("-----------------------------------------------------------------")
+	fmt.Println("\n配置完成后，请确保 TEMPSHARE_INITIALIZED=true，然后重新启动服务。")
+}
+
+```
+
+backend/middleware.go
+```
+// backend/middleware.go
+package main
+
+import (
+	"log/slog"
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"golang.org/x/time/rate"
+)
+
+// IPRateLimiter 存储每个IP地址的速率限制器
+type IPRateLimiter struct {
+	ips      map[string]*rate.Limiter
+	mu       sync.Mutex
+	requests int
+	duration time.Duration
+}
+
+// NewIPRateLimiter 创建一个新的速率限制器实例
+func NewIPRateLimiter(r int, d time.Duration) *IPRateLimiter {
+	return &IPRateLimiter{
+		ips:      make(map[string]*rate.Limiter),
+		requests: r,
+		duration: d,
+	}
+}
+
+// addIP 创建一个新的速率限制器并添加到IP映射中
+func (i *IPRateLimiter) addIP(ip string) *rate.Limiter {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+
+	// 使用 rate.NewLimiter(每秒事件数, 桶的大小)
+	// 我们希望在 'duration' 内允许 'requests' 次请求
+	// 所以速率是 requests / duration_in_seconds
+	limiter := rate.NewLimiter(rate.Limit(float64(i.requests)/i.duration.Seconds()), i.requests)
+	i.ips[ip] = limiter
+
+	// 启动一个goroutine，在持续时间后从map中删除此IP，以防止内存泄漏
+	go func() {
+		time.Sleep(i.duration)
+		i.mu.Lock()
+		delete(i.ips, ip)
+		i.mu.Unlock()
+	}()
+
+	return limiter
+}
+
+// getLimiter 从map中获取一个IP的速率限制器，如果不存在则创建一个
+func (i *IPRateLimiter) getLimiter(ip string) *rate.Limiter {
+	i.mu.Lock()
+	limiter, exists := i.ips[ip]
+	i.mu.Unlock()
+
+	if !exists {
+		// 使用双重检查锁定模式来避免不必要的锁定
+		return i.addIP(ip)
+	}
+
+	return limiter
+}
+
+// RateLimitMiddleware 是 Gin 中间件函数
+func (i *IPRateLimiter) RateLimitMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		limiter := i.getLimiter(c.ClientIP())
+		if !limiter.Allow() {
+			slog.Warn("速率限制触发", "clientIP", c.ClientIP())
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"message": "请求过于频繁，请稍后再试。"})
+			return
+		}
+		c.Next()
+	}
+}
+
+```
+
+backend/scanner.go
+```
+// backend/scanner.go
+package main
+
+import (
+	"log/slog"
+	"strings"
+	"time"
+
+	"github.com/dutchcoders/go-clamd"
+)
+
+type ClamdScanner struct {
+	client *clamd.Clamd
+}
+
+// NewScanner 创建一个新的 ClamdScanner 实例。
+// 它会尝试连接到 clamd 守护进程，并在连接失败时进行多次重试。
+func NewScanner(clamdAddress string) (*ClamdScanner, error) {
+	if clamdAddress == "" {
+		slog.Warn("ClamdSocket 未在 config.json 中配置，文件扫描功能将不可用。")
+		return &ClamdScanner{client: nil}, nil
+	}
+
+	const maxRetries = 5               // 最多重试5次
+	const retryDelay = 5 * time.Second // 每次重试间隔5秒
+
+	var c *clamd.Clamd
+	var err error
+
+	for i := 1; i <= maxRetries; i++ {
+		c = clamd.NewClamd(clamdAddress)
+		err = c.Ping()
+		if err == nil {
+			slog.Info("成功连接到 clamd 守护进程", "address", clamdAddress, "attempt", i)
+			return &ClamdScanner{client: c}, nil
+		}
+
+		slog.Warn("无法连接到 clamd 守护进程", "attempt", i, "maxAttempts", maxRetries, "address", clamdAddress, "error", err)
+
+		if i < maxRetries {
+			slog.Info("将在指定延迟后重试", "delay", retryDelay)
+			time.Sleep(retryDelay)
+		}
+	}
+
+	slog.Error("最终无法连接到 clamd，所有重试均失败", "maxAttempts", maxRetries)
+	slog.Warn("请确保 clamd 正在运行，并且地址配置正确。")
+	slog.Warn("在Linux上, 运行 'sudo systemctl start clamav-daemon' 并使用 'systemctl status clamav-daemon' 检查状态。")
+	slog.Warn("在Windows上, 启动 'ClamAV ClamD' 服务。")
+	slog.Warn("文件扫描功能将在此次运行中被禁用。")
+
+	return nil, err
+}
+
+func (s *ClamdScanner) ScanFile(filePath string) (string, string) {
+	if s.client == nil {
+		return ScanStatusSkipped, "扫描器未初始化"
+	}
+
+	slog.Info("开始扫描文件", "component", "clamd", "path", filePath)
+
+	response, err := s.client.ScanFile(filePath)
+	if err != nil {
+		slog.Error("Clamd 扫描通信出错", "component", "clamd", "error", err)
+		return ScanStatusError, "Clamd扫描通信失败"
+	}
+
+	for result := range response {
+		slog.Debug("收到 Clamd 响应", "component", "clamd", "rawResponse", result.Raw)
+		if result.Status == clamd.RES_FOUND {
+			virusName := strings.TrimSuffix(strings.TrimPrefix(result.Raw, result.Path+": "), " FOUND")
+			slog.Warn("危险! 文件发现病毒", "component", "clamd", "path", filePath, "virus", virusName)
+			return ScanStatusInfected, virusName
+		} else if result.Status == clamd.RES_ERROR {
+			errorDetails := strings.TrimSuffix(strings.TrimPrefix(result.Raw, result.Path+": "), " ERROR")
+			slog.Error("Clamd 扫描时发生错误", "component", "clamd", "details", errorDetails)
+			return ScanStatusError, errorDetails
+		}
+	}
+
+	slog.Info("扫描完成，文件安全", "component", "clamd", "path", filePath)
+	return ScanStatusClean, "文件安全"
+}
+
+```
+
+backend/storage.go
+```
+// backend/storage.go
+package main
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/studio-b12/gowebdav"
+	"gorm.io/gorm"
+)
+
+// FileStorage 定义了所有存储后端必须实现的接口
+type FileStorage interface {
+	Save(key string, reader io.Reader) (int64, error)
+	Retrieve(key string) (io.ReadCloser, error)
+	Delete(key string) error
+	Exists(key string) bool
+}
+
+// --- Local Storage Implementation ---
+type LocalStorage struct{ basePath string }
+
+func NewLocalStorage(config StorageConfig) (*LocalStorage, error) {
+	if err := os.MkdirAll(config.LocalPath, os.ModePerm); err != nil {
+		return nil, fmt.Errorf("无法创建本地存储目录 %s: %w", config.LocalPath, err)
+	}
+	slog.Info("使用本地文件存储", "path", config.LocalPath)
+	return &LocalStorage{basePath: config.LocalPath}, nil
+}
+func (l *LocalStorage) fullPath(key string) string { return filepath.Join(l.basePath, key) }
+func (l *LocalStorage) Save(key string, reader io.Reader) (int64, error) {
+	filePath := l.fullPath(key)
+	file, err := os.Create(filePath)
+	if err != nil {
+		return 0, fmt.Errorf("本地存储创建文件失败: %w", err)
+	}
+	defer file.Close()
+	return io.Copy(file, reader)
+}
+func (l *LocalStorage) Retrieve(key string) (io.ReadCloser, error) {
+	file, err := os.Open(l.fullPath(key))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, gorm.ErrRecordNotFound
+		}
+		return nil, fmt.Errorf("本地存储打开文件失败: %w", err)
+	}
+	return file, nil
+}
+func (l *LocalStorage) Delete(key string) error {
+	err := os.Remove(l.fullPath(key))
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("本地存储删除文件失败: %w", err)
+	}
+	return nil
+}
+func (l *LocalStorage) Exists(key string) bool {
+	_, err := os.Stat(l.fullPath(key))
+	return !os.IsNotExist(err)
+}
+
+// --- S3 Storage Implementation ---
+type S3Storage struct {
+	client *s3.Client
+	bucket string
+}
+
+func NewS3Storage(config StorageConfig) (*S3Storage, error) {
+	cfg, err := awsconfig.LoadDefaultConfig(context.TODO(),
+		awsconfig.WithRegion(config.S3.Region),
+		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(config.S3.AccessKeyID, config.S3.SecretAccessKey, "")),
+		awsconfig.WithEndpointResolverWithOptions(aws.EndpointResolverWithOptionsFunc(
+			func(service, region string, options ...interface{}) (aws.Endpoint, error) {
+				if config.S3.Endpoint != "" {
+					return aws.Endpoint{URL: config.S3.Endpoint}, nil
+				}
+				return aws.Endpoint{}, &aws.EndpointNotFoundError{}
+			},
+		)),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("无法加载 S3 配置: %w", err)
+	}
+	client := s3.NewFromConfig(cfg, func(o *s3.Options) { o.UsePathStyle = config.S3.UsePathStyle })
+	slog.Info("使用 S3 对象存储", "endpoint", config.S3.Endpoint, "bucket", config.S3.Bucket)
+	return &S3Storage{client: client, bucket: config.S3.Bucket}, nil
+}
+func (s *S3Storage) Save(key string, reader io.Reader) (int64, error) {
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return 0, fmt.Errorf("S3 存储读取数据流失败: %w", err)
+	}
+	contentLength := int64(len(data))
+	_, err = s.client.PutObject(context.TODO(), &s3.PutObjectInput{
+		Bucket: aws.String(s.bucket), Key: aws.String(key), Body: bytes.NewReader(data), ContentLength: &contentLength,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("S3 存储上传对象失败: %w", err)
+	}
+	return contentLength, nil
+}
+func (s *S3Storage) Retrieve(key string) (io.ReadCloser, error) {
+	output, err := s.client.GetObject(context.TODO(), &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket), Key: aws.String(key),
+	})
+	if err != nil {
+		var nsk *types.NoSuchKey
+		if errors.As(err, &nsk) {
+			return nil, gorm.ErrRecordNotFound
+		}
+		return nil, fmt.Errorf("S3 存储获取对象失败: %w", err)
+	}
+	return output.Body, nil
+}
+func (s *S3Storage) Delete(key string) error {
+	_, err := s.client.DeleteObject(context.TODO(), &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucket), Key: aws.String(key),
+	})
+	if err != nil {
+		return fmt.Errorf("S3 存储删除对象失败: %w", err)
+	}
+	return nil
+}
+func (s *S3Storage) Exists(key string) bool {
+	_, err := s.client.HeadObject(context.TODO(), &s3.HeadObjectInput{
+		Bucket: aws.String(s.bucket), Key: aws.String(key),
+	})
+	return err == nil
+}
+
+// --- WebDAV Storage Implementation ---
+type WebDAVStorage struct {
+	client *gowebdav.Client
+}
+
+func NewWebDAVStorage(config StorageConfig) (*WebDAVStorage, error) {
+	client := gowebdav.NewClient(config.WebDAV.URL, config.WebDAV.Username, config.WebDAV.Password)
+
+	// ✨ 修复点: 检查连接和认证
+	if err := client.Connect(); err != nil {
+		if strings.Contains(err.Error(), fmt.Sprintf("%d", http.StatusUnauthorized)) {
+			return nil, fmt.Errorf("WebDAV 认证失败 (401 Unauthorized): 请检查用户名和密码: %w", err)
+		}
+		return nil, fmt.Errorf("WebDAV 服务器连接失败 at %s: %w", config.WebDAV.URL, err)
+	}
+
+	slog.Info("使用 WebDAV 存储", "url", config.WebDAV.URL)
+	return &WebDAVStorage{client: client}, nil
+}
+
+func (w *WebDAVStorage) Save(key string, reader io.Reader) (int64, error) {
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return 0, fmt.Errorf("WebDAV 存储读取数据流失败: %w", err)
+	}
+	contentLength := int64(len(data))
+
+	err = w.client.Write(key, data, 0644)
+	if err != nil {
+		return 0, fmt.Errorf("WebDAV 存储写入失败: %w", err)
+	}
+	return contentLength, nil
+}
+
+func (w *WebDAVStorage) Retrieve(key string) (io.ReadCloser, error) {
+	stream, err := w.client.ReadStream(key)
+	if err != nil {
+		// ✨ 修复点: gowebdav 在文件不存在时会返回符合 os.IsNotExist 的错误
+		if os.IsNotExist(err) {
+			return nil, gorm.ErrRecordNotFound
+		}
+		return nil, fmt.Errorf("WebDAV 存储读取流失败: %w", err)
+	}
+	return stream, nil
+}
+
+func (w *WebDAVStorage) Delete(key string) error {
+	err := w.client.Remove(key)
+	if err != nil {
+		// ✨ 修复点: 同样使用 os.IsNotExist 判断
+		if os.IsNotExist(err) {
+			return nil // 文件本就不存在，任务完成
+		}
+		return fmt.Errorf("WebDAV 存储删除文件失败: %w", err)
+	}
+	return nil
+}
+
+func (w *WebDAVStorage) Exists(key string) bool {
+	_, err := w.client.Stat(key)
+	return err == nil
+}
+
+// --- Factory Function ---
+func NewFileStorage(config StorageConfig) (FileStorage, error) {
+	switch strings.ToLower(config.Type) {
+	case "local":
+		return NewLocalStorage(config)
+	case "s3":
+		return NewS3Storage(config)
+	case "webdav":
+		return NewWebDAVStorage(config)
+	default:
+		return nil, fmt.Errorf("不支持的存储类型: %s", config.Type)
+	}
+}
+
+```
+
+backend/tasks.go
+```
+// backend/tasks.go
+package main
+
+import (
+	"log/slog"
+	"time"
+
+	"gorm.io/gorm"
+)
+
+// CleanupExpiredFilesTask 接收 db 和 storage 实例
+func CleanupExpiredFilesTask(db *gorm.DB, storage FileStorage) {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+
+	// 首次运行前先执行一次
+	cleanup(db, storage)
+
+	for {
+		<-ticker.C
+		cleanup(db, storage)
+	}
+}
+
+func cleanup(db *gorm.DB, storage FileStorage) {
+	slog.Info("开始执行过期文件清理任务...")
+
+	const batchSize = 100
+	var deletedCount int64
+
+	for {
+		var expiredFiles []File
+
+		// 查询时只选择必要的字段
+		result := db.Select("id", "storage_key", "access_code", "filename").
+			Where("expires_at <= ?", time.Now()).Limit(batchSize).Find(&expiredFiles)
+
+		if result.Error != nil {
+			slog.Error("清理任务错误: 查询批次失败", "error", result.Error)
+			break
+		}
+
+		if len(expiredFiles) == 0 {
+			break
+		}
+
+		for _, file := range expiredFiles {
+			// 先删除物理文件/对象
+			if err := storage.Delete(file.StorageKey); err != nil {
+				slog.Error("清理错误: 删除存储对象失败", "key", file.StorageKey, "error", err)
+				// 即使物理文件删除失败，也继续尝试删除数据库记录，避免无限重试
+			}
+
+			// 再删除数据库记录
+			if err := db.Delete(&File{}, "id = ?", file.ID).Error; err != nil {
+				slog.Error("清理错误: 删除数据库记录失败", "id", file.ID, "error", err)
+			} else {
+				slog.Info("已清理过期文件", "id", file.ID, "accessCode", file.AccessCode, "filename", file.Filename)
+				deletedCount++
+			}
+		}
+	}
+
+	if deletedCount > 0 {
+		slog.Info("本轮清理任务完成", "deletedCount", deletedCount)
+	} else {
+		slog.Info("清理完成，没有发现新的过期文件。")
+	}
+}
+
+```
+
+frontend/src/App.css
+```
+
+```
+
+frontend/src/App.tsx
+```
+// src/App.tsx
+import { BrowserRouter, Routes, Route } from 'react-router-dom';
+import Layout from './components/Layout.tsx'; // 添加 .tsx
+import UploaderPage from './pages/UploaderPage.tsx'; // 添加 .tsx
+import DownloadPage from './pages/DownloadPage.tsx'; // 添加 .tsx
+import ReportPage from './pages/ReportPage.tsx'; // 添加 .tsx
+
+function App() {
+  return (
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<Layout />}>
+          <Route index element={<UploaderPage />} />
+          <Route path="download/:accessCode" element={<DownloadPage />} />
+          <Route path="report" element={<ReportPage />} />
+        </Route>
+      </Routes>
+    </BrowserRouter>
+  );
+}
+
+export default App;
+```
+
+frontend/src/assets/react.svg
+```
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" aria-hidden="true" role="img" class="iconify iconify--logos" width="35.93" height="32" preserveAspectRatio="xMidYMid meet" viewBox="0 0 256 228"><path fill="#00D8FF" d="M210.483 73.824a171.49 171.49 0 0 0-8.24-2.597c.465-1.9.893-3.777 1.273-5.621c6.238-30.281 2.16-54.676-11.769-62.708c-13.355-7.7-35.196.329-57.254 19.526a171.23 171.23 0 0 0-6.375 5.848a155.866 155.866 0 0 0-4.241-3.917C100.759 3.829 77.587-4.822 63.673 3.233C50.33 10.957 46.379 33.89 51.995 62.588a170.974 170.974 0 0 0 1.892 8.48c-3.28.932-6.445 1.924-9.474 2.98C17.309 83.498 0 98.307 0 113.668c0 15.865 18.582 31.778 46.812 41.427a145.52 145.52 0 0 0 6.921 2.165a167.467 167.467 0 0 0-2.01 9.138c-5.354 28.2-1.173 50.591 12.134 58.266c13.744 7.926 36.812-.22 59.273-19.855a145.567 145.567 0 0 0 5.342-4.923a168.064 168.064 0 0 0 6.92 6.314c21.758 18.722 43.246 26.282 56.54 18.586c13.731-7.949 18.194-32.003 12.4-61.268a145.016 145.016 0 0 0-1.535-6.842c1.62-.48 3.21-.974 4.76-1.488c29.348-9.723 48.443-25.443 48.443-41.52c0-15.417-17.868-30.326-45.517-39.844Zm-6.365 70.984c-1.4.463-2.836.91-4.3 1.345c-3.24-10.257-7.612-21.163-12.963-32.432c5.106-11 9.31-21.767 12.459-31.957c2.619.758 5.16 1.557 7.61 2.4c23.69 8.156 38.14 20.213 38.14 29.504c0 9.896-15.606 22.743-40.946 31.14Zm-10.514 20.834c2.562 12.94 2.927 24.64 1.23 33.787c-1.524 8.219-4.59 13.698-8.382 15.893c-8.067 4.67-25.32-1.4-43.927-17.412a156.726 156.726 0 0 1-6.437-5.87c7.214-7.889 14.423-17.06 21.459-27.246c12.376-1.098 24.068-2.894 34.671-5.345a134.17 134.17 0 0 1 1.386 6.193ZM87.276 214.515c-7.882 2.783-14.16 2.863-17.955.675c-8.075-4.657-11.432-22.636-6.853-46.752a156.923 156.923 0 0 1 1.869-8.499c10.486 2.32 22.093 3.988 34.498 4.994c7.084 9.967 14.501 19.128 21.976 27.15a134.668 134.668 0 0 1-4.877 4.492c-9.933 8.682-19.886 14.842-28.658 17.94ZM50.35 144.747c-12.483-4.267-22.792-9.812-29.858-15.863c-6.35-5.437-9.555-10.836-9.555-15.216c0-9.322 13.897-21.212 37.076-29.293c2.813-.98 5.757-1.905 8.812-2.773c3.204 10.42 7.406 21.315 12.477 32.332c-5.137 11.18-9.399 22.249-12.634 32.792a134.718 134.718 0 0 1-6.318-1.979Zm12.378-84.26c-4.811-24.587-1.616-43.134 6.425-47.789c8.564-4.958 27.502 2.111 47.463 19.835a144.318 144.318 0 0 1 3.841 3.545c-7.438 7.987-14.787 17.08-21.808 26.988c-12.04 1.116-23.565 2.908-34.161 5.309a160.342 160.342 0 0 1-1.76-7.887Zm110.427 27.268a347.8 347.8 0 0 0-7.785-12.803c8.168 1.033 15.994 2.404 23.343 4.08c-2.206 7.072-4.956 14.465-8.193 22.045a381.151 381.151 0 0 0-7.365-13.322Zm-45.032-43.861c5.044 5.465 10.096 11.566 15.065 18.186a322.04 322.04 0 0 0-30.257-.006c4.974-6.559 10.069-12.652 15.192-18.18ZM82.802 87.83a323.167 323.167 0 0 0-7.227 13.238c-3.184-7.553-5.909-14.98-8.134-22.152c7.304-1.634 15.093-2.97 23.209-3.984a321.524 321.524 0 0 0-7.848 12.897Zm8.081 65.352c-8.385-.936-16.291-2.203-23.593-3.793c2.26-7.3 5.045-14.885 8.298-22.6a321.187 321.187 0 0 0 7.257 13.246c2.594 4.48 5.28 8.868 8.038 13.147Zm37.542 31.03c-5.184-5.592-10.354-11.779-15.403-18.433c4.902.192 9.899.29 14.978.29c5.218 0 10.376-.117 15.453-.343c-4.985 6.774-10.018 12.97-15.028 18.486Zm52.198-57.817c3.422 7.8 6.306 15.345 8.596 22.52c-7.422 1.694-15.436 3.058-23.88 4.071a382.417 382.417 0 0 0 7.859-13.026a347.403 347.403 0 0 0 7.425-13.565Zm-16.898 8.101a358.557 358.557 0 0 1-12.281 19.815a329.4 329.4 0 0 1-23.444.823c-7.967 0-15.716-.248-23.178-.732a310.202 310.202 0 0 1-12.513-19.846h.001a307.41 307.41 0 0 1-10.923-20.627a310.278 310.278 0 0 1 10.89-20.637l-.001.001a307.318 307.318 0 0 1 12.413-19.761c7.613-.576 15.42-.876 23.31-.876H128c7.926 0 15.743.303 23.354.883a329.357 329.357 0 0 1 12.335 19.695a358.489 358.489 0 0 1 11.036 20.54a329.472 329.472 0 0 1-11 20.722Zm22.56-122.124c8.572 4.944 11.906 24.881 6.52 51.026c-.344 1.668-.73 3.367-1.15 5.09c-10.622-2.452-22.155-4.275-34.23-5.408c-7.034-10.017-14.323-19.124-21.64-27.008a160.789 160.789 0 0 1 5.888-5.4c18.9-16.447 36.564-22.941 44.612-18.3ZM128 90.808c12.625 0 22.86 10.235 22.86 22.86s-10.235 22.86-22.86 22.86s-22.86-10.235-22.86-22.86s10.235-22.86 22.86-22.86Z"></path></svg>
+```
+
+frontend/src/components/CodeInput.tsx
+```
+// src/components/CodeInput.tsx
+import React, { useRef, useImperativeHandle, forwardRef, useEffect } from 'react';
+// ✨ 导入 LoaderCircle 图标
+import { LoaderCircle } from 'lucide-react';
+
+// ✨ 增加 isSubmitting prop
+interface CodeInputProps {
+  value: string;
+  onChange: (value: string) => void;
+  onComplete?: (value: string) => void;
+  isSubmitting?: boolean;
+}
+
+export interface CodeInputHandle {
+  focus: () => void;
+}
+
+const CODE_LENGTH = 6;
+
+const CodeInput = forwardRef<CodeInputHandle, CodeInputProps>(({ value, onChange, onComplete, isSubmitting = false }, ref) => {
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useImperativeHandle(ref, () => ({
+    focus: () => {
+      inputRef.current?.focus();
+    },
+  }));
+
+  useEffect(() => {
+    // ✨ 当输入完成且未在提交状态时，才调用 onComplete
+    if (value.length === CODE_LENGTH && onComplete && !isSubmitting) {
+      onComplete(value);
+    }
+  }, [value, onComplete, isSubmitting]);
+
+  const handleContainerClick = () => {
+    // ✨ 提交时禁止聚焦，防止用户再次输入
+    if (!isSubmitting) {
+        inputRef.current?.focus();
+    }
+  };
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (isSubmitting) return;
+    const newValue = e.target.value.replace(/[^a-zA-Z0-9]/g, '').toUpperCase().slice(0, CODE_LENGTH);
+    onChange(newValue);
+  };
+
+  const characters = value.split('');
+
+  return (
+    <div
+      className={`relative w-full h-16 flex items-center justify-center gap-2 md:gap-3 ${isSubmitting ? 'cursor-wait' : 'cursor-text'}`}
+      onClick={handleContainerClick}
+    >
+      {Array.from({ length: CODE_LENGTH }).map((_, index) => {
+        const hasCharacter = index < characters.length;
+        const isCurrent = index === characters.length;
+
+        return (
+          <div
+            key={index}
+            className={`
+              w-10 h-14 md:w-12 md:h-16 flex items-center justify-center
+              text-2xl md:text-3xl font-mono font-bold text-brand-dark
+              bg-black/5 border-2 rounded-lg
+              transition-all duration-200 ease-in-out
+              ${isCurrent && !isSubmitting ? 'border-brand-cyan shadow-lg shadow-brand-cyan/20' : 'border-transparent'}
+              ${hasCharacter ? 'border-black/10' : ''}
+              ${isSubmitting ? 'opacity-70' : ''}
+            `}
+          >
+            {characters[index] || ''}
+            {/* ✨ 核心修改点: 根据状态显示光标或加载图标 ✨ */}
+            {isCurrent && !isSubmitting && (
+              <span className="absolute w-0.5 h-7 bg-brand-cyan animate-pulse rounded-full"></span>
+            )}
+            {isSubmitting && index === CODE_LENGTH - 1 && (
+                <div className="absolute flex items-center justify-center">
+                    <LoaderCircle className="w-6 h-6 text-brand-cyan animate-spin" />
+                </div>
+            )}
+          </div>
+        );
+      })}
+
+      <input
+        ref={inputRef}
+        type="text"
+        value={value}
+        onChange={handleInputChange}
+        maxLength={CODE_LENGTH}
+        disabled={isSubmitting} // ✨ 提交时禁用输入
+        className="absolute w-full h-full opacity-0 p-0 m-0 border-none"
+        style={{ top: 0, left: 0, caretColor: 'transparent' }}
+      />
+    </div>
+  );
+});
+
+CodeInput.displayName = 'CodeInput';
+
+export default CodeInput;
+```
+
+frontend/src/components/Countdown.tsx
+```
+// frontend/src/components/Countdown.tsx
+import { useState, useEffect, useCallback } from 'react';
+
+const Countdown = ({ expiresAt, className }: { expiresAt: string, className?: string }) => {
+    const calculateRemaining = useCallback(() => {
+        const diff = new Date(expiresAt).getTime() - new Date().getTime();
+        return Math.max(0, Math.floor(diff / 1000));
+    }, [expiresAt]);
+
+    const [remainingSeconds, setRemainingSeconds] = useState(calculateRemaining());
+
+    useEffect(() => {
+        const timer = setInterval(() => setRemainingSeconds(calculateRemaining()), 1000);
+        return () => clearInterval(timer);
+    }, [calculateRemaining]);
+
+    if (remainingSeconds <= 0) return <span className="text-red-500 font-semibold">已过期</span>;
+
+    const h = String(Math.floor(remainingSeconds / 3600)).padStart(2, '0');
+    const m = String(Math.floor((remainingSeconds % 3600) / 60)).padStart(2, '0');
+    const s = String(remainingSeconds % 60).padStart(2, '0');
+    
+    // ✨✨✨ 核心修改点: 根据剩余时间动态改变样式 ✨✨✨
+    const isUrgent = remainingSeconds < 60;
+    const timeColor = isUrgent ? 'text-red-500 animate-pulse' : 'text-brand-light';
+
+    return (
+        <span className={`font-mono transition-colors duration-300 ${timeColor} ${className || ''}`}>
+            {h}:{m}:{s}
+        </span>
+    );
+};
+
+export default Countdown;
+```
+
+frontend/src/components/DownloadPageSkeleton.tsx
+```
+// frontend/src/components/DownloadPageSkeleton.tsx
+import { FileQuestion, ShieldQuestion } from 'lucide-react';
+
+const SkeletonBox = ({ className = '' }: { className?: string }) => (
+  <div className={`bg-slate-200/80 animate-pulse rounded-md ${className}`} />
+);
+
+const DownloadPageSkeleton = () => {
+  return (
+    <div className="w-full max-w-6xl mx-auto p-4 md:p-8 grid grid-cols-1 lg:grid-cols-2 gap-8 pointer-events-none">
+      {/* Left Card Skeleton */}
+      <div className="w-full bg-white/50 backdrop-blur-xl border border-white/10 rounded-2xl shadow-soft-2xl p-8 flex flex-col">
+        <div className="text-center">
+          <SkeletonBox className="h-9 w-3/4 mx-auto" />
+          <SkeletonBox className="h-5 w-1/2 mx-auto mt-3" />
+        </div>
+        
+        <div className="w-full my-6 p-4 bg-black/5 rounded-lg space-y-3">
+            <div className="flex items-center justify-between">
+              <SkeletonBox className="h-5 w-1/4" />
+              <SkeletonBox className="h-5 w-1/4" />
+            </div>
+            <div className="w-full h-px bg-black/10"></div>
+            <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2 text-slate-400">
+                    <ShieldQuestion size={20} /><span>扫描状态</span>
+                </div>
+                <SkeletonBox className="h-5 w-1/3" />
+            </div>
+        </div>
+
+        <div className="mt-auto">
+            <SkeletonBox className="h-14 w-full" />
+        </div>
+         <SkeletonBox className="h-4 w-1/3 mx-auto mt-6" />
+      </div>
+
+      {/* Right Card Skeleton */}
+      <div className="w-full bg-white/50 backdrop-blur-xl border border-white/10 rounded-2xl shadow-soft-xl p-4 flex flex-col min-h-[300px] lg:min-h-0">
+         <SkeletonBox className="h-7 w-1/3 mb-4" />
+          <div className="flex-grow flex flex-col items-center justify-center text-center p-8 bg-black/5 rounded-lg">
+              <div className="mb-4">
+                  <FileQuestion className="w-16 h-16 text-slate-300 flex-shrink-0" strokeWidth={1.5} />
+              </div>
+              <SkeletonBox className="h-7 w-4/5" />
+              <SkeletonBox className="h-10 w-28 mt-8" />
+          </div>
+      </div>
+    </div>
+  );
+};
+
+export default DownloadPageSkeleton;
+```
+
+frontend/src/components/HumanizedCountdown.tsx
+```
+import { useState, useEffect, useCallback } from 'react';
+
+// 定义时间单位的中文表示
+const timeUnits = {
+    day: '天',
+    hour: '小时',
+    minute: '分钟',
+    second: '秒',
+};
+
+const HumanizedCountdown = ({ expiresAt, prefix = '', suffix = '后到期' }: { expiresAt: string, prefix?: string, suffix?: string }) => {
+    const calculateRemaining = useCallback(() => {
+        const diff = new Date(expiresAt).getTime() - new Date().getTime();
+        return Math.max(0, Math.floor(diff / 1000));
+    }, [expiresAt]);
+
+    const [remainingSeconds, setRemainingSeconds] = useState(calculateRemaining());
+
+    useEffect(() => {
+        // 每分钟更新一次就足够了，除非时间很短
+        const updateInterval = remainingSeconds > 3600 ? 60000 : 1000;
+        const timer = setInterval(() => {
+            setRemainingSeconds(calculateRemaining());
+        }, updateInterval);
+        return () => clearInterval(timer);
+    }, [calculateRemaining, remainingSeconds]);
+
+    if (remainingSeconds <= 0) {
+        return <span className="text-red-400">已过期</span>;
+    }
+
+    const days = Math.floor(remainingSeconds / 86400);
+    const hours = Math.floor((remainingSeconds % 86400) / 3600);
+    const minutes = Math.floor((remainingSeconds % 3600) / 60);
+    const seconds = remainingSeconds % 60;
+
+    const parts = [];
+    if (days > 0) parts.push(`${days} ${timeUnits.day}`);
+    if (hours > 0) parts.push(`${hours} ${timeUnits.hour}`);
+    // 当时间大于1小时，就不显示分钟和秒
+    if (days === 0 && hours === 0) {
+        if (minutes > 0) parts.push(`${minutes} ${timeUnits.minute}`);
+        if (minutes < 5 && seconds > 0) parts.push(`${seconds} ${timeUnits.second}`); // 只在最后几分钟显示秒
+    }
+
+    // 如果 parts 为空 (例如只剩下几秒钟), 显示一个通用消息
+    if (parts.length === 0 && remainingSeconds > 0) {
+        return <span className="text-sky-300">{`${prefix}即将到期${suffix}`}</span>;
+    }
+    
+    // 取前两个最重要的时间单位
+    const displayText = parts.slice(0, 2).join(' ');
+
+    return <span className="text-slate-400">{`${prefix}${displayText}${suffix}`}</span>;
+};
+
+export default HumanizedCountdown;
+```
+
+frontend/src/components/Layout.tsx
+```
+// src/components/Layout.tsx
+import {  useState } from 'react';
+import { Link, Outlet, useLocation } from 'react-router-dom';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Menu, X } from 'lucide-react';
+import SidePanel from './SidePanel';
+// ✨✨✨ 核心修改点 1: 导入新的背景组件 ✨✨✨
+import RotatingBackground from './RotatingBackground'; 
+
+const pageVariants = {
+    initial: { opacity: 0, y: 30, scale: 0.98 },
+    in: { opacity: 1, y: 0, scale: 1 },
+    out: { opacity: 0, y: -30, scale: 1.02 },
+};
+const pageTransition = { type: 'spring', stiffness: 260, damping: 20 } as const;
+
+// 之前的 InteractiveGradientBackground 组件可以删除了
+
+const Layout = () => {
+    const location = useLocation();
+    const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
+    const [isHoveringSidebar, setIsHoveringSidebar] = useState(false);
+
+    const shouldExpand = isSidebarExpanded || isHoveringSidebar;
+
+    return (
+        <div className="flex flex-col min-h-screen min-h-dvh text-gray-900 dark:text-gray-100">
+            
+            {/* ✨✨✨ 核心修改点 2: 使用新的背景组件 ✨✨✨ */}
+            <RotatingBackground />
+            
+            <button
+                onClick={() => setIsSidebarExpanded(!isSidebarExpanded)}
+                className="lg:hidden fixed top-4 left-4 z-30 p-2 bg-white/50 backdrop-blur-lg rounded-full text-brand-dark"
+            >
+                {shouldExpand ? <X size={24} /> : <Menu size={24} />}
+            </button>
+            
+            <SidePanel 
+                isExpanded={shouldExpand}
+                onMouseEnter={() => setIsHoveringSidebar(true)}
+                onMouseLeave={() => setIsHoveringSidebar(false)}
+                onClose={() => setIsSidebarExpanded(false)}
+            />
+            
+            <div className={`
+                flex-grow flex flex-col items-center p-4 
+                transition-all duration-500 ease-in-out
+                lg:pl-20 
+                ${shouldExpand ? 'lg:pl-[408px]' : 'lg:pl-20'}
+            `}>
+                <div className="w-full max-w-4xl z-10 flex flex-col flex-grow">
+                    <header className="text-center my-8 md:my-12 flex-shrink-0">
+                        <Link to="/" className="inline-block">
+                             {/* ✨ 建议: 为了在图片背景上更清晰，给文字添加阴影 */}
+                            <h1 className="text-4xl md:text-5xl font-bold text-white transition-transform duration-300 hover:scale-105 [text-shadow:_0_2px_4px_rgb(0_0_0_/_40%)]">
+                                🪽 闪传驿站 <span className="text-brand-cyan">TempShare</span>
+                            </h1>
+                        </Link>
+                        <p className="text-slate-200 mt-2 [text-shadow:_0_1px_2px_rgb(0_0_0_/_50%)]">安全、快速、无需登录的临时文件分享</p>
+                    </header>
+
+                    <main className="relative flex-grow flex items-center justify-center">
+                        <AnimatePresence mode="wait">
+                            <motion.div
+                                key={location.pathname}
+                                initial="initial"
+                                animate="in"
+                                exit="out"
+                                variants={pageVariants}
+                                transition={pageTransition}
+                                className="w-full"
+                            >
+                                <div className="bg-white/50 backdrop-blur-2xl border border-white/10 rounded-2xl shadow-soft-2xl">
+                                    <Outlet />
+                                </div>
+                            </motion.div>
+                        </AnimatePresence>
+                    </main>
+
+                    <footer className="text-center mt-8 text-slate-300 text-sm space-y-2 flex-shrink-0 [text-shadow:_0_1px_2px_rgb(0_0_0_/_50%)]">
+                        <p>一个纯粹、值得信赖的临时文件分享工具。我们仅记录您的IP地址用于防止滥用。</p>
+                        <div>
+                            <Link to="/report" className="hover:text-brand-cyan underline">
+                                举报滥用内容
+                            </Link>
+                        </div>
+                    </footer>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+export default Layout;
+```
+
+frontend/src/components/PreviewModal.tsx
+```
+// frontend/src/components/PreviewModal.tsx
+import { useEffect, useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { X, FileText, Download, LoaderCircle } from 'lucide-react';
+import hljs from 'highlight.js/lib/core';
+import 'highlight.js/styles/atom-one-dark.css';
+
+// 按需加载高亮语言
+import javascript from 'highlight.js/lib/languages/javascript';
+import typescript from 'highlight.js/lib/languages/typescript';
+import xml from 'highlight.js/lib/languages/xml';
+import css from 'highlight.js/lib/languages/css';
+import json from 'highlight.js/lib/languages/json';
+import markdown from 'highlight.js/lib/languages/markdown';
+import plaintext from 'highlight.js/lib/languages/plaintext';
+
+import { DIRECT_API_BASE_URL, fetchAppInfo } from '../lib/api.ts';
+import type { FileMetadata } from '../lib/api.ts';
+
+// 注册语言
+hljs.registerLanguage('javascript', javascript);
+hljs.registerLanguage('typescript', typescript);
+hljs.registerLanguage('xml', xml);
+hljs.registerLanguage('css', css);
+hljs.registerLanguage('json', json);
+hljs.registerLanguage('markdown', markdown);
+hljs.registerLanguage('plaintext', plaintext);
+
+// ✨✨✨ 修复点: 添加 Base64 -> UTF8 解码函数 ✨✨✨
+// 使用 TextDecoder API 来正确处理多字节字符 (例如中文)
+function base64ToUtf8(base64: string): string {
+    try {
+        const binStr = atob(base64);
+        const len = binStr.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+            bytes[i] = binStr.charCodeAt(i);
+        }
+        const decoder = new TextDecoder('utf-8');
+        return decoder.decode(bytes);
+    } catch (e) {
+        console.error('Failed to decode base64 to utf8:', e);
+        // Fallback for environments where TextDecoder might not be supported,
+        // or for strings that are not valid UTF-8.
+        try {
+            return decodeURIComponent(escape(atob(base64)));
+        } catch (e2) {
+            console.error('Fallback decoding failed:', e2);
+            return ''; // or handle error appropriately
+        }
+    }
+}
+
+
+export const previewableExtensions = {
+    image: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'],
+    video: ['mp4', 'webm', 'ogg'],
+    audio: ['mp3', 'wav'],
+    pdf: ['pdf'],
+    office: ['ppt', 'pptx', 'doc', 'docx', 'xls', 'xlsx'],
+    text: ['txt', 'md', 'json', 'js', 'ts', 'css', 'html', 'xml', 'log', 'go', 'py', 'java', 'c', 'cpp', 'cs', 'sh', 'bat']
+};
+
+const backdropVariants = {
+    hidden: { opacity: 0 },
+    visible: { opacity: 1, transition: { duration: 0.2 } },
+};
+
+const modalVariants = {
+    hidden: { scale: 0.9, opacity: 0 },
+    visible: {
+        scale: 1,
+        opacity: 1,
+        transition: { type: 'spring', stiffness: 400, damping: 35 } as const
+    },
+    exit: {
+        scale: 0.9,
+        opacity: 0,
+        transition: { duration: 0.2 } as const
+    }
+};
+
+const PreviewModal = ({ file, onClose }: { file: FileMetadata, onClose: () => void }) => {
+    const [previewContent, setPreviewContent] = useState('');
+    const [isLoading, setIsLoading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const [publicHost, setPublicHost] = useState('');
+
+    const directDownloadUrl = `${DIRECT_API_BASE_URL}/data/${file.accessCode}`;
+    const proxiedPreviewUrl = `/api/v1/preview/${file.accessCode}`;
+    const dataUriPreviewUrl = `/api/v1/preview/data-uri/${file.accessCode}`;
+
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') onClose();
+        };
+        window.addEventListener('keydown', handleKeyDown);
+
+        const fileExtension = file.filename.split('.').pop()?.toLowerCase() || '';
+
+        const fetchAppConfig = async () => {
+            try {
+                const appInfo = await fetchAppInfo();
+                setPublicHost(appInfo.publicHost);
+            } catch (error) {
+                console.error("Failed to fetch app info:", error);
+            }
+        };
+
+        fetchAppConfig();
+
+
+        const fetchContentForPreview = async () => {
+            // ✨✨✨ 修复点: 仅文本文件需要 fetch data-uri ✨✨✨
+            // PDF 和其他文件类型将直接使用流式 URL
+            if (!previewableExtensions.text.includes(fileExtension)) {
+                setIsLoading(false);
+                return;
+            }
+
+            setIsLoading(true);
+            setError(null);
+            
+            try {
+                const response = await fetch(dataUriPreviewUrl);
+                if (!response.ok) {
+                    const errData = await response.json().catch(() => ({ message: '无法获取预览内容' }));
+                    throw new Error(errData.message);
+                }
+
+                const data = await response.json();
+                
+                // ✨✨✨ 修复点: 使用新的解码函数并进行高亮 ✨✨✨
+                const base64Content = data.dataUri.split(',')[1];
+                const textContent = base64ToUtf8(base64Content); // 使用新的解码函数
+                const highlighted = hljs.highlightAuto(textContent).value;
+                setPreviewContent(highlighted);
+
+            } catch (err: any) {
+                console.error("预览加载失败:", err);
+                setError(err.message || '加载预览时发生未知错误。');
+            } finally {
+                setIsLoading(false);
+            }
+        };
+        
+        fetchContentForPreview();
+
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [file.accessCode, file.filename, dataUriPreviewUrl, onClose]);
+
+    const fileExtension = file.filename.split('.').pop()?.toLowerCase() || '';
+
+    const renderContent = () => {
+        if (isLoading) {
+            return <div className="flex items-center justify-center h-full text-brand-dark"><LoaderCircle className="animate-spin mr-2" /> 正在加载预览...</div>
+        }
+        if (error) {
+            return <div className="flex flex-col items-center justify-center h-full text-red-600 p-4 text-center"><X className="w-12 h-12 mb-4"/>预览加载失败: <br/>{error}</div>
+        }
+
+        if (previewableExtensions.image.includes(fileExtension)) {
+            return <div className="w-full h-full flex items-center justify-center"><img src={proxiedPreviewUrl} alt={file.filename} className="max-w-full max-h-full object-contain" /></div>;
+        }
+        if (previewableExtensions.video.includes(fileExtension)) {
+            return <video src={proxiedPreviewUrl} controls autoPlay className="w-full h-full bg-black" />;
+        }
+        if (previewableExtensions.audio.includes(fileExtension)) {
+            return (
+                <div className="w-full h-full flex flex-col items-center justify-center p-8 bg-gray-50">
+                     <h3 className="text-xl font-bold mb-4 break-all text-brand-dark">{file.filename}</h3>
+                     <audio src={proxiedPreviewUrl} controls autoPlay className="w-full max-w-md" />
+                </div>
+            );
+        }
+        if (previewableExtensions.office.includes(fileExtension)) {
+            if (!publicHost) {
+                return <div className="flex items-center justify-center h-full text-brand-dark"><LoaderCircle className="animate-spin mr-2" /> 正在加载预览配置...</div>
+            }
+            const fullProxiedUrl = `${publicHost}${proxiedPreviewUrl}`;
+            const officeViewerUrl = `https://view.officeapps.live.com/op/view.aspx?src=${encodeURIComponent(fullProxiedUrl)}`;
+            return <iframe src={officeViewerUrl} title={file.filename} className="w-full h-full border-0" allow="fullscreen" />;
+        }
+        
+        // ✨✨✨ 修复点: PDF 直接使用代理的流式 URL ✨✨✨
+        // 这避免了 data-uri 的大小限制问题
+        if (previewableExtensions.pdf.includes(fileExtension)) {
+            return <iframe src={proxiedPreviewUrl} title={file.filename} className="w-full h-full border-0 bg-white" />;
+        }
+        if (previewableExtensions.text.includes(fileExtension)) {
+            return <pre className="w-full h-full overflow-auto p-4 bg-[#282c34]"><code className="hljs" dangerouslySetInnerHTML={{ __html: previewContent }}></code></pre>;
+        }
+
+        return (
+            <div className="w-full h-full flex flex-col items-center justify-center p-8 bg-gray-50 text-center">
+                <FileText className="w-16 h-16 mb-4 text-brand-cyan"/>
+                <h3 className="text-2xl font-bold mb-2 break-all text-brand-dark">{file.filename}</h3>
+                <p className="text-brand-light">此文件类型不支持在线预览</p>
+                <a 
+                    href={directDownloadUrl} 
+                    download 
+                    className="mt-6 inline-flex items-center gap-2 bg-brand-cyan hover:brightness-110 text-white font-bold py-2 px-4 rounded-lg transition-all"
+                >
+                    <Download size={18} />
+                    下载文件
+                </a>
+            </div>
+        );
+    }
+
+    return (
+        <AnimatePresence>
+            <motion.div
+                className="fixed inset-0 backdrop-blur-sm flex items-center justify-center z-50"
+                variants={backdropVariants}
+                initial="hidden"
+                animate="visible"
+                exit="hidden"
+                onClick={onClose}
+            >
+                <motion.div
+                    className="relative w-full h-full max-w-full max-h-full bg-white shadow-2xl flex flex-col overflow-hidden md:rounded-lg md:max-w-[95vw] md:max-h-[95vh]"
+                    variants={modalVariants}
+                    initial="hidden"
+                    animate="visible"
+                    exit="exit"
+                    onClick={e => e.stopPropagation()}
+                >
+                    {renderContent()}
+
+                    <motion.button 
+                        onClick={onClose} 
+                        whileHover={{ scale: 1.1, rotate: 90 }}
+                        whileTap={{ scale: 0.9 }}
+                        className="absolute top-4 right-4 p-2 rounded-full bg-gray-800/50 text-white hover:bg-gray-900/70 focus:outline-none focus:ring-2 focus:ring-white/50 transition-all"
+                        aria-label="关闭预览"
+                    >
+                        <X size={24} />
+                    </motion.button>
+                </motion.div>
+            </motion.div>
+        </AnimatePresence>
+    );
+};
+
+export default PreviewModal;
+''
+```
+
+frontend/src/components/PublicFilesBoard.tsx
+```
+// src/components/PublicFilesBoard.tsx
+import { useState, useEffect } from 'react';
+import { Link } from 'react-router-dom';
+import { fetchPublicFiles } from '../lib/api.ts';
+import type { PublicFileInfo } from '../lib/api.ts';
+import { File as FileIcon, Clock } from 'lucide-react';
+import Countdown from './Countdown.tsx';
+
+// ✨✨✨ 核心修改点 1: 创建一个内部的骨架屏组件 ✨✨✨
+const FileItemSkeleton = () => (
+    <div className="grid grid-cols-2 gap-4 p-4 items-center">
+        <div className="col-span-1 flex items-center gap-3">
+            <div className="w-5 h-5 bg-slate-200 rounded animate-pulse"></div>
+            <div className="w-3/4 h-4 bg-slate-200 rounded animate-pulse"></div>
+        </div>
+        <div className="col-span-1 flex items-center justify-end gap-2">
+            <div className="w-12 h-4 bg-slate-200 rounded animate-pulse"></div>
+        </div>
+    </div>
+);
+
+const PublicFilesBoard = ({ isPanelExpanded }: { isPanelExpanded: boolean }) => {
+    const [files, setFiles] = useState<PublicFileInfo[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
+
+    useEffect(() => {
+        let intervalId: ReturnType<typeof setInterval> | undefined;
+
+        const loadFiles = async () => {
+            try {
+                const fetchedFiles = await fetchPublicFiles();
+                setFiles(fetchedFiles);
+            } catch (error) {
+                console.error(error);
+                setFiles([]);
+            } finally {
+                setIsLoading(false);
+            }
+        };
+
+        if (isPanelExpanded) {
+            setIsLoading(true);
+            loadFiles();
+            intervalId = setInterval(loadFiles, 30000);
+        } else {
+            setFiles([]);
+            setIsLoading(true); // 重置为 loading，以便下次展开时显示骨架屏
+        }
+
+        return () => {
+            if (intervalId) {
+                clearInterval(intervalId);
+            }
+        };
+    }, [isPanelExpanded]);
+
+    if (!isPanelExpanded) {
+        return null;
+    }
+    
+    return (
+        <div className="p-4 md:p-6 w-full">
+            <h2 className="text-2xl font-bold text-center mb-4 text-brand-dark">最新公开文件</h2>
+            <div className="bg-black/5 border border-black/5 rounded-xl overflow-hidden">
+                <div className="grid grid-cols-2 gap-4 p-4 border-b border-black/10 text-brand-light font-bold text-sm">
+                    <div className="col-span-1">文件名</div>
+                    <div className="col-span-1 text-right">剩余时间</div>
+                </div>
+                <div className="divide-y divide-black/5 max-h-[calc(100vh-200px)] overflow-y-auto">
+                    {/* ✨✨✨ 核心修改点 2: 根据状态渲染内容或骨架屏 ✨✨✨ */}
+                    {isLoading ? (
+                        // 渲染骨架屏
+                        Array.from({ length: 8 }).map((_, index) => <FileItemSkeleton key={index} />)
+                    ) : files.length > 0 ? (
+                        // 渲染真实文件列表
+                        files.map(file => (
+                            <Link to={`/download/${file.accessCode}`} key={file.accessCode} className="grid grid-cols-2 gap-4 p-4 items-center hover:bg-black/10 transition-colors duration-200 text-brand-dark">
+                                <div className="col-span-1 flex items-center gap-3 truncate">
+                                    <FileIcon className="w-5 h-5 text-brand-cyan flex-shrink-0" />
+                                    <span className="truncate">{file.filename}</span>
+                                </div>
+                                <div className="col-span-1 flex items-center justify-end gap-2">
+                                    <Clock size={16} />
+                                    <Countdown expiresAt={file.expiresAt} />
+                                </div>
+                            </Link>
+                        ))
+                    ) : (
+                        // 渲染空状态提示
+                        <div className="text-center text-brand-light p-8">现在还没有公开分享的文件哦，快来上传一个吧！</div>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+};
+
+export default PublicFilesBoard;
+```
+
+frontend/src/components/RotatingBackground.tsx
+```
+// frontend/src/components/RotatingBackground.tsx
+import { useState, useEffect } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+
+// ✨ 在这里定义您的背景图片列表
+// 图片路径是相对于 /public 目录的
+const backgroundImages = [
+    '/backgrounds/bg1.jpg',
+    '/backgrounds/bg2.jpg',
+    '/backgrounds/bg3.jpg',
+    // 您可以根据需要添加更多图片
+];
+
+// 图片轮播间隔（毫秒）
+const ROTATION_INTERVAL = 10000; // 10 秒
+
+const RotatingBackground = () => {
+    const [index, setIndex] = useState(0);
+
+    useEffect(() => {
+        const timer = setInterval(() => {
+            setIndex((prevIndex) => (prevIndex + 1) % backgroundImages.length);
+        }, ROTATION_INTERVAL);
+
+        return () => clearInterval(timer); // 组件卸载时清除定时器
+    }, []);
+
+    return (
+        <div className="fixed inset-0 z-[-1] overflow-hidden bg-black">
+            <AnimatePresence>
+                <motion.div
+                    key={index} // ✨ 使用 key 来触发 AnimatePresence 的动画
+                    className="absolute inset-0 bg-cover bg-center"
+                    style={{ backgroundImage: `url(${backgroundImages[index]})` }}
+                    initial={{ opacity: 0, scale: 1.05 }}
+                    animate={{ opacity: 1, scale: 1, transition: { duration: 1.5, ease: 'easeOut' } }}
+                    exit={{ opacity: 0, scale: 1.05, transition: { duration: 1.5, ease: 'easeIn' } }}
+                />
+            </AnimatePresence>
+            {/* 添加一个半透明的黑色遮罩层，以确保前景文字的可读性 */}
+            <div className="absolute inset-0 bg-black/30"></div>
+        </div>
+    );
+};
+
+export default RotatingBackground;
+```
+
+frontend/src/components/ScanStatusDisplay.tsx
+```
+// src/components/ScanStatusDisplay.tsx
+import { LoaderCircle, ShieldCheck, XCircle, SkipForward, ShieldQuestion } from 'lucide-react';
+import type { FileMetadata } from '../lib/api.ts';
+
+const ScanStatusDisplay = ({ status, result }: { status: FileMetadata['scanStatus'], result: string }) => {
+    // ✨ 美化改动: 调整颜色以适应新主题
+    switch (status) {
+        case 'clean':
+            return <div className="flex items-center gap-2 text-green-600"><ShieldCheck size={20} /><span>{result}</span></div>;
+        case 'infected':
+            return <div className="flex items-center gap-2 text-red-600"><XCircle size={20} /><span>威胁: {result}</span></div>;
+        case 'skipped':
+             return <div className="flex items-center gap-2 text-slate-500"><SkipForward size={20} /><span>{result}</span></div>;
+        case 'error':
+            return <div className="flex items-center gap-2 text-amber-600"><ShieldQuestion size={20} /><span>扫描状态: {result}</span></div>;
+        default:
+            return <div className="flex items-center gap-2 text-slate-500"><LoaderCircle className="animate-spin" size={20} /><span>获取扫描状态...</span></div>;
+    }
+};
+
+export default ScanStatusDisplay;
+```
+
+frontend/src/components/SidePanel.tsx
+```
+// frontend/src/components/SidePanel.tsx
+import { useEffect, useRef, useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { animate, JSAnimation } from 'animejs';
+import PublicFilesBoard from './PublicFilesBoard';
+import { ChevronRight } from 'lucide-react';
+
+interface SidePanelProps {
+    isExpanded: boolean;
+    onMouseEnter: () => void;
+    onMouseLeave: () => void;
+    onClose: () => void;
+}
+
+const SidePanel = ({ isExpanded, onMouseEnter, onMouseLeave, onClose }: SidePanelProps) => {
+    const [isMobile, setIsMobile] = useState(false);
+    const panelRef = useRef<HTMLDivElement>(null);
+    const animationRef = useRef<JSAnimation | null>(null);
+
+    useEffect(() => {
+        const checkMobile = () => {
+            const mobile = window.innerWidth < 1024;
+            setIsMobile(mobile);
+            if (panelRef.current) {
+                if (mobile) {
+                    panelRef.current.style.width = '320px';
+                    panelRef.current.style.transform = isExpanded ? 'translateX(0%)' : 'translateX(-100%)';
+                } else {
+                    panelRef.current.style.transform = '';
+                    panelRef.current.style.width = isExpanded ? '384px' : '64px';
+                }
+            }
+        };
+        checkMobile();
+        window.addEventListener('resize', checkMobile);
+        return () => window.removeEventListener('resize', checkMobile);
+    }, [isExpanded]);
+
+    useEffect(() => {
+        if (panelRef.current) {
+            if (animationRef.current) {
+                animationRef.current.pause();
+            }
+
+            animationRef.current = animate(
+                panelRef.current,
+                {
+                    ...(isMobile
+                        ? { translateX: isExpanded ? '0%' : '-100%' }
+                        : { width: isExpanded ? '384px' : '64px' }),
+                    duration: 500,
+                    easing: 'easeOutQuint',
+                }
+            );
+        }
+    }, [isExpanded, isMobile]);
+
+    const desktopHoverHandlers = isMobile ? {} : { onMouseEnter, onMouseLeave };
+
+    return (
+        <>
+            <AnimatePresence>
+                {isExpanded && isMobile && (
+                    <motion.div
+                        className="fixed inset-0 bg-black/50 z-10 lg:hidden"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        onClick={onClose}
+                    />
+                )}
+            </AnimatePresence>
+            
+            <div
+                ref={panelRef}
+                className="fixed top-0 left-0 h-full z-20"
+                style={{
+                    width: isMobile ? '320px' : '64px', 
+                    transform: isMobile ? 'translateX(-100%)' : 'none' 
+                }}
+                {...desktopHoverHandlers}
+            >
+                <div className="h-full w-full bg-white/50 backdrop-blur-2xl border-r border-white/20 shadow-soft-xl overflow-hidden">
+                    <motion.div
+                        className="w-[384px] max-w-full"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: isExpanded ? 1 : 0 }}
+                        transition={{ delay: isExpanded ? 0.2 : 0, duration: 0.2 }}
+                    >
+                        <PublicFilesBoard isPanelExpanded={isExpanded} />
+                    </motion.div>
+
+                    {/* ✨✨✨ 核心修改点: 优化收起状态的视觉提示 ✨✨✨ */}
+                    <motion.div
+                        className="absolute top-1/2 -translate-y-1/2 left-0 w-16 flex flex-col items-center justify-center gap-4 text-brand-dark"
+                        initial={{ opacity: 1 }}
+                        animate={{ opacity: isExpanded ? 0 : 1 }}
+                        transition={{ delay: isExpanded ? 0 : 0.2, duration: 0.2 }}
+                        // 添加呼吸辉光效果来吸引用户注意
+                        whileHover={{ scale: 1.05 }}
+                    >
+                        <motion.div
+                             animate={{
+                                // 辉光效果
+                                boxShadow: [
+                                    "0 0 0px rgba(43, 216, 251, 0)",
+                                    "0 0 20px rgba(43, 216, 251, 0.4)",
+                                    "0 0 0px rgba(43, 216, 251, 0)",
+                                ],
+                                // 箭头轻微移动
+                                x: [0, 3, 0],
+                            }}
+                            transition={{
+                                duration: 2.5,
+                                repeat: Infinity,
+                                ease: "easeInOut",
+                                repeatDelay: 1
+                            }}
+                            className="rounded-full"
+                        >
+                            <ChevronRight className="w-6 h-6" />
+                        </motion.div>
+                        <p className="[writing-mode:vertical-rl] tracking-widest text-sm font-semibold">
+                            最新文件
+                        </p>
+                    </motion.div>
+                </div>
+            </div>
+        </>
+    );
+};
+
+export default SidePanel;
+```
+
+frontend/src/components/UploadProgressCircle.tsx
+```
+// frontend/src/components/UploadProgressCircle.tsx
+
+import { motion } from 'framer-motion';
+
+interface UploadProgressCircleProps {
+  status: 'transferring' | 'success' | 'initial';
+  progress: number;
+  speed?: string;
+}
+
+const circleVariants = {
+  hidden: {
+    strokeDashoffset: 314,
+  },
+  visible: (progress: number) => ({
+    strokeDashoffset: 314 - (progress / 100) * 314,
+    transition: { type: 'spring' as const, stiffness: 50, damping: 15 },
+  }),
+};
+
+const checkmarkVariants = {
+  hidden: { pathLength: 0 },
+  visible: {
+    pathLength: 1,
+    transition: { duration: 0.5, ease: 'easeOut' as const, delay: 0.2 },
+  },
+};
+
+const UploadProgressCircle = ({ progress, status, speed }: UploadProgressCircleProps) => {
+  return (
+    <div className="relative w-48 h-48 flex items-center justify-center">
+      <svg className="absolute w-full h-full" viewBox="0 0 120 120">
+        {/* ✨ 美化改动: 背景环颜色 */}
+        <circle
+          cx="60"
+          cy="60"
+          r="50"
+          strokeWidth="8"
+          className="stroke-black/10"
+          fill="none"
+        />
+        {/* Progress Circle */}
+        {status === 'transferring' && (
+          <motion.circle
+            cx="60"
+            cy="60"
+            r="50"
+            strokeWidth="8"
+            // ✨ 美化改动: 进度条使用品牌青色
+            className="stroke-brand-cyan"
+            fill="none"
+            transform="rotate(-90 60 60)"
+            strokeLinecap="round"
+            strokeDasharray="314"
+            variants={circleVariants}
+            initial="hidden"
+            animate="visible"
+            custom={progress}
+          />
+        )}
+        {/* Success Circle */}
+        {status === 'success' && (
+           <motion.circle
+            cx="60"
+            cy="60"
+            r="50"
+            strokeWidth="8"
+             // ✨ 美化改动: 成功状态使用品牌绿色
+            className="stroke-brand-mint"
+            fill="none"
+            initial={{ scale: 0.8, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1, transition: { duration: 0.5, ease: 'easeOut' as const } }}
+          />
+        )}
+      </svg>
+      {/* ✨ 美化改动: 调整文字颜色 */}
+      <div className="z-10 text-center text-brand-dark">
+        {status === 'transferring' && (
+          <>
+            <div className="text-4xl font-bold">{Math.round(progress)}<span className="text-2xl">%</span></div>
+            <div className="text-sm text-brand-light mt-1 h-5">{speed}</div>
+          </>
+        )}
+        {status === 'success' && (
+          <motion.svg
+            // ✨ 美化改动: 对勾使用品牌绿色
+            className="w-20 h-20 text-brand-mint"
+            viewBox="0 0 52 52"
+          >
+            <motion.path
+              fill="none"
+              strokeWidth="4"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              stroke="currentColor"
+              d="M14 27l6 6 18-18"
+              variants={checkmarkVariants}
+              initial="hidden"
+              animate="visible"
+            />
+          </motion.svg>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default UploadProgressCircle;
+```
+
+frontend/src/declarations.d.ts
+```
+// src/declarations.d.ts
+
+// 这为 'streamsaver' 模块提供了类型声明，解决了TypeScript的报错。
+declare module 'streamsaver';
+
+/*
+declare namespace React {
+  interface InputHTMLAttributes<T> extends HTMLAttributes<T> {
+    webkitdirectory?: string;
+    directory?: string;
+  }
+}
+*/
+```
+
+frontend/src/hooks/useMediaQuery.ts
+```
+// src/hooks/useMediaQuery.ts
+import { useState, useEffect } from 'react';
+
+const useMediaQuery = (query: string): boolean => {
+  const [matches, setMatches] = useState(false);
+
+  useEffect(() => {
+    const media = window.matchMedia(query);
+    if (media.matches !== matches) {
+      setMatches(media.matches);
+    }
+    const listener = () => setMatches(media.matches);
+    window.addEventListener('resize', listener);
+    return () => window.removeEventListener('resize', listener);
+  }, [matches, query]);
+
+  return matches;
+};
+
+export default useMediaQuery;
+```
+
+frontend/src/hooks/useOnClickOutside.ts
+```
+// src/hooks/useOnClickOutside.ts
+import { useEffect, type RefObject } from 'react';
+
+type Event = MouseEvent | TouchEvent;
+
+const useOnClickOutside = <T extends HTMLElement = HTMLElement>(
+  ref: RefObject<T | null>,
+  handler: (event: Event) => void
+) => {
+  useEffect(() => {
+    const listener = (event: Event) => {
+      const el = ref.current;
+      // 如果点击发生在 ref 元素或其子元素内部，则不执行任何操作
+      if (!el || el.contains(event.target as Node)) {
+        return;
+      }
+      handler(event);
+    };
+
+    // 添加 mousedown 和 touchstart 事件监听
+    document.addEventListener('mousedown', listener);
+    document.addEventListener('touchstart', listener);
+
+    // 清理函数：在组件卸载时移除事件监听
+    return () => {
+      document.removeEventListener('mousedown', listener);
+      document.removeEventListener('touchstart', listener);
+    };
+  }, [ref, handler]); // 仅在 ref 或 handler 变化时重新运行 effect
+};
+
+export default useOnClickOutside;
+```
+
+frontend/src/index.css
+```
+/* src/index.css */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji';
+  /* body 的背景色不再需要，因为我们用固定定位的背景组件覆盖了它 */
+  /* @apply bg-brand-bg; */
+}
+
+/* ✨✨✨ 核心修改点: 删除或注释掉不再使用的背景样式 ✨✨✨ */
+/* 
+.interactive-gradient-background {
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background: radial-gradient(circle 800px at var(--mouse-x) var(--mouse-y), 
+        rgba(43, 216, 251, 0.3),
+        rgba(238, 248, 100, 0.2),
+        rgba(100, 248, 197, 0.2),
+        transparent 80%);
+} 
+*/
+```
+
+frontend/src/lib/api.ts
+```
+// src/lib/api.ts
+
+export const PROXY_API_BASE_URL = ''; // Vite proxy will handle API calls in dev mode
+
+// ✨✨✨ 修复点: 使用 Vite 的 import.meta.env 来获取基础 URL ✨✨✨
+// 在开发模式下 (npm run dev): import.meta.env.VITE_DIRECT_API_BASE_URL 是 undefined,
+// 我们回退到 PROXY_API_BASE_URL ('')，让 Vite 的 proxy 生效。
+// 在生产构建时 (npm run build in Docker): vite.config.ts 会把这个变量替换为
+// docker-compose.yml 中 build.args 定义的值 (我们设置为空字符串 "" 或其他)。
+export const DIRECT_API_BASE_URL = import.meta.env.VITE_DIRECT_API_BASE_URL || 'https://localhost:8080';
+
+// --- 类型定义 ---
+
+export interface FileMetadata {
+    accessCode: string;
+    filename: string;
+    sizeBytes: number;
+    originalSizeBytes: number;
+    createdAt: string;
+    isEncrypted: boolean;
+    encryptionSalt: string;
+    downloadOnce: boolean;
+    expiresAt: string;
+    scanStatus: 'pending' | 'clean' | 'infected' | 'error' | 'skipped';
+    scanResult: string;
+}
+
+export interface PublicFileInfo {
+    accessCode: string;
+    filename: string;
+    sizeBytes: number;
+    expiresAt: string;
+    isEncrypted: boolean;
+}
+
+export interface ShareDetails {
+    id: string;
+    accessCode: string;
+    urlPath: string;
+}
+
+// --- API 请求函数 ---
+
+export async function fetchFileMetadata(accessCode: string): Promise<FileMetadata> {
+    const res = await fetch(`${DIRECT_API_BASE_URL}/api/v1/files/meta/${accessCode}`);
+    if (!res.ok) {
+        const errorData = await res.json().catch(() => ({ message: '无法获取文件信息' }));
+        throw new Error(errorData.message);
+    }
+    return res.json();
+}
+
+export async function fetchPublicFiles(): Promise<PublicFileInfo[]> {
+    const res = await fetch(`${DIRECT_API_BASE_URL}/api/v1/files/public`);
+    if (!res.ok) {
+        throw new Error("无法加载公共文件列表");
+    }
+    return (await res.json()) || [];
+}
+
+export async function submitReport(accessCode: string, reason: string): Promise<{ message: string }> {
+    const res = await fetch(`${DIRECT_API_BASE_URL}/api/v1/report`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accessCode: accessCode.toUpperCase(), reason })
+    });
+    return res.json();
+}
+
+export async function fetchAppInfo(): Promise<{ publicHost: string }> {
+    const res = await fetch(`${DIRECT_API_BASE_URL}/api/v1/info`);
+    if (!res.ok) {
+        throw new Error("无法获取应用配置信息");
+    }
+    return res.json();
+}
+```
+
+frontend/src/lib/crypto.ts
+```
+// src/lib/crypto.ts
+
+// --- 常量定义 (无变化) ---
+const SALT_LENGTH = 16;
+const IV_LENGTH = 12; // AES-GCM 推荐长度
+const PBKDF2_ITERATIONS = 100000;
+const PLAINTEXT_CHUNK_SIZE = 64 * 1024; // 64KB, 明文分块大小
+const LENGTH_PREFIX_SIZE = 4; // 4字节 (Uint32) 用于存储每个加密块的长度
+
+// --- 密钥派生函数 (无变化) ---
+async function deriveKeyFromPassword(password: string, salt: Uint8Array): Promise<CryptoKey> {
+    const passwordEncoder = new TextEncoder();
+    const passwordBuffer = passwordEncoder.encode(password);
+    
+    const baseKey = await crypto.subtle.importKey(
+        'raw', passwordBuffer, { name: 'PBKDF2' }, false, ['deriveKey']
+    );
+
+    return await crypto.subtle.deriveKey(
+        { name: 'PBKDF2', salt, iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
+        baseKey,
+        { name: 'AES-GCM', length: 256 },
+        true,
+        ['encrypt', 'decrypt']
+    );
+}
+
+// ✨ 核心修改点: 新增创建验证哈希的函数 ✨
+async function createVerificationHash(password: string, salt: Uint8Array): Promise<string> {
+    const encoder = new TextEncoder();
+    const passwordBuffer = encoder.encode(password);
+    
+    // 将密码和盐连接在一起进行哈希，增加破解难度
+    const combinedBuffer = new Uint8Array(passwordBuffer.length + salt.length);
+    combinedBuffer.set(passwordBuffer);
+    combinedBuffer.set(salt, passwordBuffer.length);
+    
+    const hashBuffer = await crypto.subtle.digest('SHA-256', combinedBuffer);
+    
+    // 将 ArrayBuffer 转换为十六进制字符串
+    return Array.from(new Uint8Array(hashBuffer))
+        .map(b => b.toString(16).padStart(2, '0'))
+        .join('');
+}
+
+
+// --- 盐生成 (无变化) ---
+export function generateSalt(): Uint8Array {
+    return crypto.getRandomValues(new Uint8Array(SALT_LENGTH));
+}
+
+// --- 文件分块流 (无变化) ---
+export function createChunkingStream(chunkSize = PLAINTEXT_CHUNK_SIZE): TransformStream<Uint8Array, Uint8Array> {
+    let buffer = new Uint8Array();
+
+    return new TransformStream({
+        transform(chunk, controller) {
+            const newBuffer = new Uint8Array(buffer.length + chunk.length);
+            newBuffer.set(buffer);
+            newBuffer.set(chunk, buffer.length);
+            buffer = newBuffer;
+
+            while (buffer.length >= chunkSize) {
+                const chunkToEnqueue = buffer.slice(0, chunkSize);
+                buffer = buffer.slice(chunkSize);
+                controller.enqueue(chunkToEnqueue);
+            }
+        },
+        flush(controller) {
+            if (buffer.length > 0) {
+                controller.enqueue(buffer);
+            }
+        }
+    });
+}
+
+// --- 加密流 (无变化) ---
+export function createEncryptionStream(key: CryptoKey): TransformStream<Uint8Array, Uint8Array> {
+    return new TransformStream({
+        async transform(chunk, controller) {
+            const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH));
+            const encryptedData = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, chunk);
+            
+            const combined = new Uint8Array(iv.length + encryptedData.byteLength);
+            combined.set(iv);
+            combined.set(new Uint8Array(encryptedData), iv.length);
+
+            const lengthPrefix = new Uint8Array(LENGTH_PREFIX_SIZE);
+            const view = new DataView(lengthPrefix.buffer);
+            view.setUint32(0, combined.byteLength, false);
+
+            controller.enqueue(lengthPrefix);
+            controller.enqueue(combined);
+        }
+    });
+}
+
+// --- 解密流 (无变化) ---
+export function createDecryptionStream(key: CryptoKey): TransformStream<Uint8Array, Uint8Array> {
+    let internalBuffer = new Uint8Array(0);
+
+    return new TransformStream({
+        async transform(chunk, controller) {
+            const newBuffer = new Uint8Array(internalBuffer.length + chunk.length);
+            newBuffer.set(internalBuffer);
+            newBuffer.set(chunk, internalBuffer.length);
+            internalBuffer = newBuffer;
+
+            while (true) {
+                if (internalBuffer.length < LENGTH_PREFIX_SIZE) {
+                    break;
+                }
+                
+                const lengthView = new DataView(internalBuffer.buffer, internalBuffer.byteOffset, LENGTH_PREFIX_SIZE);
+                const frameLength = lengthView.getUint32(0, false);
+
+                const totalFrameLength = LENGTH_PREFIX_SIZE + frameLength;
+                if (internalBuffer.length < totalFrameLength) {
+                    break;
+                }
+
+                const frame = internalBuffer.slice(LENGTH_PREFIX_SIZE, totalFrameLength);
+                internalBuffer = internalBuffer.slice(totalFrameLength);
+                
+                try {
+                    const iv = frame.slice(0, IV_LENGTH);
+                    const data = frame.slice(IV_LENGTH);
+                    const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, data);
+                    controller.enqueue(new Uint8Array(decrypted));
+                } catch (err) {
+                    controller.error(new Error("Decryption failed. Incorrect password or corrupt data."));
+                    return;
+                }
+            }
+        },
+        flush(controller) {
+            if (internalBuffer.length > 0) {
+                controller.error(new Error("Incomplete data stream at the end. The file might be corrupted."));
+            }
+        }
+    });
+}
+
+
+// --- Base64 转换函数 (无变化) ---
+export function bufferToBase64(buffer: ArrayBuffer): string {
+    let binary = '';
+    const bytes = new Uint8Array(buffer);
+    const len = bytes.byteLength;
+    for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    return window.btoa(binary);
+}
+
+export function base64ToBuffer(base64: string): ArrayBuffer {
+    const binaryString = window.atob(base64);
+    const len = binaryString.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+    }
+    return bytes.buffer;
+}
+
+// --- 导出模块 ---
+export const E2EE = {
+    generateSalt,
+    deriveKeyFromPassword,
+    createVerificationHash, // ✨ 导出新函数
+    bufferToBase64,
+    base64ToBuffer,
+    createChunkingStream,
+    createEncryptionStream,
+    createDecryptionStream
+};
+```
+
+frontend/src/main.tsx
+```
+// src/main.tsx
+
+import React from 'react'
+import ReactDOM from 'react-dom/client'
+import { createBrowserRouter, RouterProvider } from 'react-router-dom'
+
+// ✨ 确保这一行存在，它会加载我们所有的 CSS 样式！
+import './index.css' 
+
+import Layout from './components/Layout.tsx'
+import UploaderPage from './pages/UploaderPage.tsx'
+import DownloadPage from './pages/DownloadPage.tsx'
+import ReportPage from './pages/ReportPage.tsx'
+
+const router = createBrowserRouter([
+  {
+    path: '/',
+    element: <Layout />,
+    children: [
+      {
+        index: true,
+        element: <UploaderPage />,
+      },
+      {
+        path: 'download/:accessCode',
+        element: <DownloadPage />,
+      },
+      {
+        path: 'report',
+        element: <ReportPage />,
+      },
+      // 你可以添加一个 404 页面
+      // {
+      //   path: '*',
+      //   element: <NotFoundPage />,
+      // }
+    ],
+  },
+])
+
+ReactDOM.createRoot(document.getElementById('root')!).render(
+  <React.StrictMode>
+    <RouterProvider router={router} />
+  </React.StrictMode>,
+)
+```
+
+frontend/src/pages/DownloadPage.tsx
+```
+// src/pages/DownloadPage.tsx
+import { useState, useEffect, useRef } from 'react';
+import { useParams } from 'react-router-dom';
+// ✨ 修复点: 重新导入了 LoaderCircle 用于解密按钮
+import { LoaderCircle, ServerCrash, Lock, KeyRound, ShieldAlert, FileText, Download, Eye, Image as ImageIcon, Film, Music, FileQuestion } from 'lucide-react';
+import streamSaver from 'streamsaver';
+import { createTimeline } from 'animejs'; 
+import { E2EE } from '../lib/crypto';
+import { fetchFileMetadata, DIRECT_API_BASE_URL } from '../lib/api';
+import type { FileMetadata } from '../lib/api';
+import HumanizedCountdown from '../components/HumanizedCountdown';
+import ScanStatusDisplay from '../components/ScanStatusDisplay';
+import PreviewModal, { previewableExtensions } from '../components/PreviewModal';
+import DownloadPageSkeleton from '../components/DownloadPageSkeleton'; 
+
+const formatBytes = (bytes: number, decimals = 2) => {
+    if (!+bytes) return '0 Bytes'
+    const k = 1024
+    const dm = decimals < 0 ? 0 : decimals
+    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB']
+    const i = Math.floor(Math.log(bytes) / Math.log(k))
+    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`
+}
+
+const getFileTypeIcon = (filename: string) => {
+    const extension = filename.split('.').pop()?.toLowerCase() || '';
+    const iconProps = { className: "w-16 h-16 text-brand-cyan flex-shrink-0", strokeWidth: 1.5 };
+
+    if (previewableExtensions.image.includes(extension)) {
+        return <ImageIcon {...iconProps} />;
+    }
+    if (previewableExtensions.video.includes(extension)) {
+        return <Film {...iconProps} />;
+    }
+    if (previewableExtensions.audio.includes(extension)) {
+        return <Music {...iconProps} />;
+    }
+    if ([...previewableExtensions.pdf, ...previewableExtensions.text].includes(extension)) {
+        return <FileText {...iconProps} />;
+    }
+    return <FileQuestion {...iconProps} />;
+};
+
+
+const DownloadPage = () => {
+    const { accessCode } = useParams<{ accessCode: string }>();
+    const [meta, setMeta] = useState<FileMetadata | null>(null);
+    const [error, setError] = useState<string | null>(null);
+    const [isLoading, setIsLoading] = useState(true);
+    const [password, setPassword] = useState('');
+    const [isDecrypting, setIsDecrypting] = useState(false);
+    const [decryptionError, setDecryptionError] = useState<string | null>(null);
+    const [decryptionProgress, setDecryptionProgress] = useState(0);
+    const [isPreviewModalOpen, setIsPreviewModalOpen] = useState(false);
+    
+    const leftCardRef = useRef(null);
+    const rightCardRef = useRef(null);
+
+    const isPreviewable = (() => {
+        if (!meta || meta.isEncrypted || meta.scanStatus === 'infected') {
+            return false;
+        }
+        const fileExtension = meta.filename.split('.').pop()?.toLowerCase() || '';
+        const allSupportedExtensions = [
+            ...previewableExtensions.image,
+            ...previewableExtensions.video,
+            ...previewableExtensions.audio,
+            ...previewableExtensions.pdf,
+            ...previewableExtensions.office,
+            ...previewableExtensions.text
+        ];
+        return allSupportedExtensions.includes(fileExtension);
+    })();
+
+
+    useEffect(() => {
+        if (!accessCode) {
+            setError("未提供文件码");
+            setIsLoading(false);
+            return;
+        }
+        const loadMetadata = async () => {
+            setIsLoading(true);
+            try {
+                const metadata = await fetchFileMetadata(accessCode);
+                setMeta(metadata);
+            } catch (err: any) {
+                setError(err.message);
+            } finally {
+                setIsLoading(false);
+            }
+        };
+        loadMetadata();
+    }, [accessCode]);
+
+    useEffect(() => {
+        if (!isLoading && meta && leftCardRef.current && rightCardRef.current) {
+            const tl = createTimeline();
+            tl.add(
+                leftCardRef.current,
+                { opacity: [0, 1], translateX: [-50, 0], rotateZ: [-5, 0], duration: 800, easing: 'easeOutExpo' }
+            ).add(
+                rightCardRef.current,
+                { opacity: [0, 1], translateX: [50, 0], rotateZ: [5, 0], duration: 800, easing: 'easeOutExpo' },
+                '-=600'
+            );
+        }
+    }, [isLoading, meta]);
+
+
+    const handleStreamDecryptAndDownload = async () => {
+        if (!meta || !meta.isEncrypted || !password) return;
+        setIsDecrypting(true);
+        setDecryptionError(null);
+        setDecryptionProgress(0);
+
+        try {
+            const salt = E2EE.base64ToBuffer(meta.encryptionSalt);
+            const [key, verificationHash] = await Promise.all([
+                E2EE.deriveKeyFromPassword(password, new Uint8Array(salt)),
+                E2EE.createVerificationHash(password, new Uint8Array(salt))
+            ]);
+
+            const response = await fetch(`${DIRECT_API_BASE_URL}/data/${accessCode}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ verificationHash }),
+            });
+
+            if (!response.ok) {
+                if (response.status === 401 || response.status === 403) {
+                    throw new Error("密码错误，请重试。");
+                }
+                const errorData = await response.json().catch(() => null);
+                throw new Error(errorData?.message || `服务器错误: ${response.statusText}`);
+            }
+
+            if (!response.body) {
+                throw new Error("服务器未返回文件流。");
+            }
+            
+            const fileStream = streamSaver.createWriteStream(meta.filename, { size: meta.originalSizeBytes });
+            const decryptionStream = E2EE.createDecryptionStream(key);
+            
+            let bytesProcessed = 0;
+            const progressStream = new TransformStream({
+                transform(chunk, controller) {
+                    bytesProcessed += chunk.byteLength;
+                    const progress = meta.originalSizeBytes ? Math.round((bytesProcessed / meta.originalSizeBytes) * 100) : 0;
+                    setDecryptionProgress(progress);
+                    controller.enqueue(chunk);
+                }
+            });
+            
+            await response.body
+                .pipeThrough(decryptionStream)
+                .pipeThrough(progressStream)
+                .pipeTo(fileStream);
+
+        } catch (err: any) {
+            console.error("流式解密失败:", err);
+            setDecryptionError(err.message || "解密失败。密码错误或文件已损坏。");
+        } finally {
+            setIsDecrypting(false);
+        }
+    };
+    
+    const renderContent = () => {
+        if (isLoading) { 
+            return <DownloadPageSkeleton />;
+        }
+        if (error) { return <div className="text-center p-8"><ServerCrash className="w-16 h-16 text-red-500 mx-auto mb-4" /><h2 className="text-2xl font-bold text-red-600">出错了</h2><p className="text-brand-light mt-1">{error}</p></div>; }
+        if (!meta) return null;
+
+        // ✨✨✨ 核心修复点: 将这段完整的 JSX 从文件末尾移回到了这里 ✨✨✨
+        const downloadOnceNotice = meta.downloadOnce && (
+            <div className="bg-brand-yellow/30 border border-brand-yellow/50 text-yellow-800 px-4 py-2 rounded-lg text-sm flex items-center gap-3 my-4">
+                <ShieldAlert size={20} />
+                <span>这是一个“阅后即焚”文件，下载一次后将永久销毁。</span>
+            </div>
+        );
+        const infectedWarning = meta.scanStatus === 'infected' && (
+             <div className="bg-red-500/10 border-2 border-red-500/50 text-red-700 px-4 py-3 rounded-xl flex flex-col items-center gap-3 my-4 shadow-lg shadow-red-500/10">
+                <div className="flex items-center gap-3"><ShieldAlert size={24} /><span className="font-bold text-lg">警告：检测到潜在威胁！</span></div>
+                <p className="text-sm">我们的扫描器在此文件中检测到威胁: <strong className="font-mono">{meta.scanResult}</strong>。强烈建议您不要下载或打开此文件。</p>
+                <p className="text-xs text-red-600">下载风险由您自行承担。</p>
+            </div>
+        );
+            
+        const downloadButtonText = meta.isEncrypted ? '解密并下载' : '下载';
+        const downloadAction = meta.isEncrypted ? handleStreamDecryptAndDownload : () => window.location.href = `${DIRECT_API_BASE_URL}/data/${accessCode}`;
+
+        return (
+            <div className="w-full max-w-6xl mx-auto p-4 md:p-8 grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <div
+                    ref={leftCardRef}
+                    style={{ opacity: 0 }}
+                    className="w-full bg-white/70 backdrop-blur-xl border border-white/30 rounded-2xl shadow-soft-2xl p-8 flex flex-col"
+                >
+                    <div className="text-center">
+                        <h2 className="text-3xl font-bold break-all text-brand-dark">{meta.filename}</h2>
+                        <div className="mt-2 text-brand-light">
+                           <HumanizedCountdown expiresAt={meta.expiresAt} />
+                        </div>
+                    </div>
+                    
+                    {downloadOnceNotice}
+                    {infectedWarning && !meta.isEncrypted && <div className="mt-4">{infectedWarning}</div>}
+                    
+                    <div className="w-full my-6 p-4 bg-black/5 rounded-lg space-y-3">
+                        <div className="flex items-center justify-between text-md">
+                            <span className="flex items-center gap-2 text-brand-light"><FileText size={18}/>文件大小</span>
+                            <span className="font-medium">{formatBytes(meta.isEncrypted ? meta.originalSizeBytes : meta.sizeBytes)}</span>
+                        </div>
+                        <div className="w-full h-px bg-black/10"></div>
+                        <div className="flex items-center justify-between">
+                             <ScanStatusDisplay status={meta.scanStatus} result={meta.scanResult} />
+                        </div>
+                    </div>
+
+                    {meta.isEncrypted ? (
+                         <div className="w-full space-y-4 mt-auto">
+                            <p className="text-brand-light text-center">这是一个加密文件，请输入密码下载。</p>
+                            <div className="relative">
+                                <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
+                                <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="请输入密码" className="w-full bg-black/5 p-3 pl-10 rounded-md border-2 border-transparent focus:border-brand-yellow focus:ring-brand-yellow transition"/>
+                            </div>
+                            <button onClick={downloadAction} disabled={!password || isDecrypting} className="w-full text-lg inline-flex items-center justify-center bg-brand-yellow disabled:bg-slate-300 disabled:cursor-not-allowed text-brand-dark font-bold py-3 rounded-lg transition-all hover:scale-105 hover:brightness-110 active:scale-95">
+                                {isDecrypting ? <LoaderCircle className="animate-spin mr-2" /> : <Download className="w-5 h-5 mr-3" />}
+                                <span>{isDecrypting ? `验证并解密... ${decryptionProgress}%` : downloadButtonText}</span>
+                            </button>
+                            {isDecrypting && <div className="w-full bg-slate-200 rounded-full h-2.5 mt-2 overflow-hidden"><div className="bg-brand-yellow h-2.5 rounded-full transition-all duration-300" style={{width: `${decryptionProgress}%`}}></div></div>}
+                            {decryptionError && <p className="text-red-500 mt-2">{decryptionError}</p>}
+                        </div>
+                    ) : (
+                         <button onClick={downloadAction} disabled={isDecrypting} className={`w-full text-lg inline-flex items-center justify-center font-bold py-3 rounded-lg transition-all mt-auto hover:scale-105 hover:brightness-110 active:scale-95 ${meta.scanStatus === 'infected' ? 'bg-red-500 hover:bg-red-600 text-white' : 'bg-brand-cyan hover:bg-brand-cyan text-white'}`}>
+                            <Download className="w-5 h-5 mr-3" />
+                            <span>{downloadButtonText}</span>
+                        </button>
+                    )}
+                    <p className="text-xs text-slate-400 mt-6 text-center">上传于: {new Date(meta.createdAt).toLocaleString()}</p>
+                </div>
+
+                <div
+                    ref={rightCardRef}
+                    style={{ opacity: 0 }}
+                    className="w-full bg-white/60 backdrop-blur-xl border border-white/20 rounded-2xl shadow-soft-xl p-4 flex flex-col min-h-[300px] lg:min-h-0"
+                >
+                    <h3 className="text-xl font-bold mb-4 text-brand-dark">文件预览</h3>
+                    <div className="flex-grow flex flex-col items-center justify-center text-center p-8 bg-black/5 rounded-lg">
+                        <div className="mb-4">
+                           {meta.isEncrypted ? 
+                                <Lock className="w-16 h-16 text-brand-yellow flex-shrink-0" strokeWidth={1.5} /> : 
+                                getFileTypeIcon(meta.filename)
+                           }
+                        </div>
+                        <h4 className="text-xl font-bold text-brand-dark break-all">{meta.filename}</h4>
+
+                        {isPreviewable ? (
+                             <button 
+                                onClick={() => setIsPreviewModalOpen(true)} 
+                                className="mt-8 inline-flex items-center justify-center gap-2 bg-slate-600 hover:bg-slate-700 text-white font-bold py-2 px-6 rounded-lg transition-colors hover:scale-105 active:scale-95"
+                             >
+                                <Eye size={18}/>
+                                <span>预览</span>
+                            </button>
+                        ) : (
+                            <p className="mt-8 text-brand-light text-sm">
+                                {meta.isEncrypted ? "加密文件无法预览" : "此文件类型不支持预览"}
+                            </p>
+                        )}
+                    </div>
+                </div>
+            </div>
+        );
+    };
+    
+    return (
+        <>
+            {isPreviewModalOpen && meta && (
+                <PreviewModal
+                    file={meta}
+                    onClose={() => setIsPreviewModalOpen(false)}
+                />
+            )}
+            <div className="min-h-[60vh] flex items-center justify-center">
+              {renderContent()}
+            </div>
+        </>
+    );
+};
+
+export default DownloadPage;
+```
+
+frontend/src/pages/ReportPage.tsx
+```
+// src/pages/ReportPage.tsx
+import { useState } from 'react';
+import type { FormEvent } from 'react';
+import { motion } from 'framer-motion';
+import { LoaderCircle, ShieldAlert } from 'lucide-react';
+import { submitReport } from '../lib/api';
+
+const ReportPage = () => {
+    const [accessCode, setAccessCode] = useState('');
+    const [reason, setReason] = useState('');
+    const [message, setMessage] = useState('');
+    const [isError, setIsError] = useState(false);
+    const [isSubmitting, setIsSubmitting] = useState(false);
+
+    const handleSubmit = async (e: FormEvent) => {
+        e.preventDefault();
+        setIsSubmitting(true);
+        setMessage('');
+        setIsError(false);
+        try {
+            const data = await submitReport(accessCode, reason);
+            setMessage(data.message);
+            const hasError = data.message.includes('失败') || data.message.includes('无效');
+            setIsError(hasError);
+            if (!hasError) {
+              setAccessCode('');
+              setReason('');
+            }
+        } catch (error) {
+            setMessage('提交失败，请检查网络连接。');
+            setIsError(true);
+        } finally {
+            setIsSubmitting(false);
+        }
+    };
+
+    return (
+        // ✨ 美化改动: 调整内边距和最大宽度
+        <div className="p-6 md:p-8 w-full max-w-lg mx-auto">
+            <h2 className="text-2xl font-bold text-center mb-6 text-brand-dark">举报非法或滥用内容</h2>
+            <form onSubmit={handleSubmit} className="space-y-6">
+                <div>
+                    {/* ✨ 美化改动: 调整标签颜色 */}
+                    <label htmlFor="report-code" className="block text-sm font-medium text-brand-light mb-2">6位文件便捷码</label>
+                    {/* ✨ 美化改动: 调整输入框样式 */}
+                    <input id="report-code" type="text" value={accessCode} onChange={e => setAccessCode(e.target.value.toUpperCase())} maxLength={6} required className="w-full bg-black/5 p-3 rounded-md border-2 border-transparent focus:border-brand-cyan focus:ring-brand-cyan transition font-mono tracking-widest text-center" />
+                </div>
+                <div>
+                    <label htmlFor="report-reason" className="block text-sm font-medium text-brand-light mb-2">举报原因 (选填)</label>
+                    <textarea id="report-reason" value={reason} onChange={e => setReason(e.target.value)} rows={4} className="w-full bg-black/5 p-3 rounded-md border-2 border-transparent focus:border-brand-cyan focus:ring-brand-cyan transition"></textarea>
+                </div>
+                {/* ✨ 美化改动: 调整按钮样式和动画 */}
+                <motion.button type="submit" disabled={isSubmitting || accessCode.length !== 6} whileHover={{scale: 1.05}} whileTap={{scale:0.95}} className="w-full inline-flex items-center justify-center bg-red-500 hover:bg-red-600 disabled:bg-slate-300 text-white font-bold py-3 rounded-lg transition-colors">
+                    {isSubmitting ? <LoaderCircle className="animate-spin mr-2" /> : <ShieldAlert className="mr-2" />} 提交举报
+                </motion.button>
+                {message && (
+                  // ✨ 美化改动: 调整消息提示框样式
+                  <p className={`text-center mt-4 p-3 rounded-lg ${isError ? 'bg-red-500/10 text-red-700' : 'bg-green-500/10 text-green-700'}`}>
+                      {message}
+                  </p>
+                )}
+            </form>
+        </div>
+    );
+};
+
+export default ReportPage;
+```
+
+frontend/src/pages/UploaderPage.tsx
+```
+// src/pages/UploaderPage.tsx
+import { useState, useCallback, useRef, useMemo, useEffect } from 'react';
+import type { FormEvent, ChangeEvent } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useDropzone } from 'react-dropzone';
+import { motion, AnimatePresence } from 'framer-motion';
+import { FileText, X, Copy, KeyRound, Plus, Trash2, Repeat, Check, QrCode, UploadCloud, Clock, Feather, FolderPlus } from 'lucide-react';
+import JSZip from 'jszip';
+import { QRCodeSVG } from 'qrcode.react';
+import { E2EE } from '../lib/crypto.ts';
+import type { ShareDetails } from '../lib/api';
+import { DIRECT_API_BASE_URL } from '../lib/api.ts';
+import UploadProgressCircle from '../components/UploadProgressCircle.tsx';
+import HumanizedCountdown from '../components/HumanizedCountdown.tsx';
+import CodeInput from '../components/CodeInput';
+import type { CodeInputHandle } from '../components/CodeInput';
+import { useUploaderStore } from '../store/uploaderStore.ts';
+import useMediaQuery from '../hooks/useMediaQuery';
+import useOnClickOutside from '../hooks/useOnClickOutside';
+
+// (辅助函数 createProgressStream 和 formatBytes 保持不变)
+function createProgressStream(totalSize: number, onProgress: (progress: number) => void, onSpeedUpdate: (speed: string) => void): TransformStream<Uint8Array, Uint8Array> {
+    let bytesSent = 0;
+    let lastTime = Date.now();
+    let lastBytesSent = 0;
+    const intervalId = setInterval(() => {
+        const now = Date.now();
+        const timeDiff = (now - lastTime) / 1000;
+        if (timeDiff > 0) {
+            const bytesDiff = bytesSent - lastBytesSent;
+            const speed = bytesDiff / timeDiff;
+            onSpeedUpdate(`${formatBytes(speed, 1)}/s`);
+        }
+        lastTime = now;
+        lastBytesSent = bytesSent;
+    }, 1000);
+    return new TransformStream({
+        transform(chunk, controller) {
+            bytesSent += chunk.length;
+            const progress = totalSize > 0 ? Math.round((bytesSent / totalSize) * 100) : 0;
+            onProgress(progress);
+            controller.enqueue(chunk);
+        },
+        flush() {
+            clearInterval(intervalId);
+            onSpeedUpdate("完成");
+        }
+    });
+}
+const formatBytes = (bytes: number, decimals = 2) => {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const dm = decimals < 0 ? 0 : decimals;
+    const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+};
+
+// ✨ InteractiveUploader 现在接收 isSubmittingCode prop
+const InteractiveUploader = ({ onAddFileClick, onAddFolderClick, onCodeSubmit, onCodeComplete, isSubmittingCode }: {
+    onAddFileClick: () => void;
+    onAddFolderClick: () => void;
+    onCodeSubmit: (e: FormEvent) => void;
+    onCodeComplete: (value: string) => void;
+    isSubmittingCode: boolean;
+}) => {
+    const { isInputMode, code, setIsInputMode, setCode } = useUploaderStore();
+    const codeInputRef = useRef<CodeInputHandle>(null);
+    const uploaderRef = useRef<HTMLDivElement>(null);
+    const [hoverTarget, setHoverTarget] = useState<'none' | 'code' | 'upload'>('none');
+    const [mobileUploadExpanded, setMobileUploadExpanded] = useState(false);
+    const isMobile = useMediaQuery('(max-width: 768px)');
+
+    useOnClickOutside(uploaderRef, () => {
+        if (isMobile && mobileUploadExpanded) {
+            setMobileUploadExpanded(false);
+        }
+    });
+
+    const handleSwitchToInput = () => {
+        setIsInputMode(true);
+        setHoverTarget('none');
+        setTimeout(() => codeInputRef.current?.focus(), 100);
+    };
+
+    const handleUploadClick = () => {
+        if (isMobile) {
+            setMobileUploadExpanded(!mobileUploadExpanded);
+        } else {
+            onAddFileClick();
+        }
+    };
+
+    const handleSwitchToUpload = () => setIsInputMode(false);
+
+    const spring = { type: "spring", stiffness: 400, damping: 30 } as const;
+    const cardBgClass = "bg-white/70 backdrop-blur-xl border border-white/30";
+
+    return (
+        <div ref={uploaderRef} className="relative w-full max-w-[450px] h-20 flex justify-center items-center">
+            <AnimatePresence mode="wait">
+                {isInputMode ? (
+                    <motion.form
+                        key="input-form"
+                        layoutId="uploader-container"
+                        onSubmit={onCodeSubmit}
+                        className={`w-full max-w-[420px] h-16 ${cardBgClass} rounded-full shadow-soft-xl flex items-center justify-between px-4`}
+                        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                        transition={{ ...spring, duration: 0.3 }}
+                    >
+                        <motion.div className="flex-grow" initial={{ opacity: 0 }} animate={{ opacity: 1, transition: { delay: 0.15 } }} exit={{ opacity: 0, transition: { duration: 0.1 } }}>
+                            <CodeInput 
+                                ref={codeInputRef} 
+                                value={code} 
+                                onChange={setCode} 
+                                onComplete={onCodeComplete} 
+                                isSubmitting={isSubmittingCode}
+                            />
+                        </motion.div>
+                        <motion.button type="button" whileHover={{ scale: 1.15, rotate: 90 }} whileTap={{ scale: 0.9 }} onClick={handleSwitchToUpload} className="p-2 rounded-full text-slate-500 hover:bg-black/10 flex-shrink-0" aria-label="关闭" initial={{ opacity: 0 }} animate={{ opacity: 1, transition: { delay: 0.15 } }} exit={{ opacity: 0, transition: { duration: 0.1 } }}>
+                            <X size={24} />
+                        </motion.button>
+                    </motion.form>
+                ) : (
+                    <motion.div
+                        key="button-group"
+                        layoutId="uploader-container"
+                        initial={{ opacity: 0, width: 280 }}
+                        animate={{ width: isMobile ? (mobileUploadExpanded ? 360 : 280) : (hoverTarget === 'code' ? 360 : 280), opacity: 1 }}
+                        transition={spring}
+                        className={`relative h-16 ${cardBgClass} rounded-full shadow-soft-xl flex items-center`}
+                        onMouseLeave={() => !isMobile && setHoverTarget('none')}
+                    >
+                        <div
+                            className="w-[120px] h-full flex-shrink-0 cursor-pointer flex items-center justify-center"
+                            onMouseEnter={() => !isMobile && setHoverTarget('code')}
+                            onClick={handleSwitchToInput}
+                        >
+                            <div className="relative w-full h-full flex items-center justify-center">
+                                <motion.span className="absolute flex items-center justify-center gap-1 whitespace-nowrap" animate={{ opacity: hoverTarget === 'code' ? 0 : 1 }}>
+                                    <KeyRound className="text-brand-cyan" size={20} />
+                                    <span className="text-lg font-semibold text-brand-cyan">取件</span>
+                                </motion.span>
+                                <motion.span className="absolute w-full h-full flex items-center justify-center gap-2 whitespace-nowrap pl-4" animate={{ opacity: hoverTarget === 'code' ? 1 : 0 }}>
+                                    <KeyRound className="text-brand-cyan" size={22} />
+                                    <span className="text-xl font-semibold text-brand-cyan">取件口令</span>
+                                </motion.span>
+                            </div>
+                        </div>
+
+                        <motion.div
+                            className="w-px h-8 bg-slate-300 pointer-events-none"
+                            animate={{ opacity: hoverTarget !== 'none' ? 0 : 1 }}
+                        />
+                        
+                        <div
+                            className="relative flex-1 h-full cursor-pointer flex items-center justify-center"
+                            onClick={handleUploadClick}
+                            onMouseEnter={() => !isMobile && setHoverTarget('upload')}
+                        >
+                            <motion.div
+                                className="flex items-center justify-center gap-2 p-3 rounded-full"
+                                animate={{ opacity: (isMobile && mobileUploadExpanded) || (!isMobile && hoverTarget === 'upload') ? 0 : 1 }}
+                            >
+                                <Plus className="text-brand-dark" size={24} />
+                                <span className="text-xl font-semibold text-brand-dark">上传</span>
+                            </motion.div>
+                        </div>
+
+                        <AnimatePresence>
+                            {((!isMobile && hoverTarget === 'upload') || (isMobile && mobileUploadExpanded)) && (
+                                <motion.div
+                                    className="absolute inset-0 bg-brand-cyan/95 rounded-full flex z-10"
+                                    initial={{ clipPath: 'inset(0 100% 0 0)' }}
+                                    animate={{ clipPath: 'inset(0 0% 0 0)' }}
+                                    exit={{ clipPath: 'inset(0 100% 0 0)' }}
+                                    transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
+                                >
+                                    <button onClick={onAddFileClick} className="flex-1 h-full flex flex-col items-center justify-center text-white hover:bg-black/10 transition-colors rounded-l-full">
+                                        <Plus size={20} /><span className="font-medium text-xs mt-1">上传文件</span>
+                                    </button>
+                                    <div className="w-px h-6 bg-white/30 self-center pointer-events-none"></div>
+                                    <button onClick={onAddFolderClick} className="flex-1 h-full flex flex-col items-center justify-center text-white hover:bg-black/10 transition-colors rounded-r-full">
+                                        <FolderPlus size={20} /><span className="font-medium text-xs mt-1">上传文件夹</span>
+                                    </button>
+                                </motion.div>
+                            )}
+                        </AnimatePresence>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+        </div>
+    );
+};
+
+
+const UploadSettingsPanel = ({
+    files, onAddFiles, onRemoveFile, onStartUpload, onCancel,
+    usePassword, setUsePassword, password, setPassword, expiry, setExpiry, downloadOnce, setDownloadOnce, isProcessing
+}: { 
+    files: File[], onAddFiles: () => void, onRemoveFile: (file: File) => void, onStartUpload: () => void, onCancel: () => void,
+    usePassword: boolean, setUsePassword: (val: boolean) => void, password: string, setPassword: (val: string) => void,
+    expiry: number, setExpiry: (val: number) => void,
+    downloadOnce: boolean, setDownloadOnce: (val: boolean) => void,
+    isProcessing: boolean
+}) => {
+    const totalSize = useMemo(() => files.reduce((acc, file) => acc + file.size, 0), [files]);
+    const [tosAccepted, setTosAccepted] = useState(false);
+
+    const ToggleSwitch = ({ enabled, setEnabled, accentClass = 'bg-brand-cyan' }: { enabled: boolean, setEnabled: (enabled: boolean) => void, accentClass?: string }) => (
+        <button type="button" role="switch" aria-checked={enabled} onClick={() => setEnabled(!enabled)} className={`${enabled ? accentClass : 'bg-slate-200'} relative inline-flex h-6 w-11 items-center rounded-full transition-colors`}>
+            <motion.span layout className={`${enabled ? 'translate-x-6' : 'translate-x-1'} inline-block h-4 w-4 transform rounded-full bg-white shadow-sm transition-transform`} />
+        </button>
+    );
+
+    return (
+        <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.95 }} transition={{ duration: 0.2 }}
+            className="w-full max-w-md mx-auto bg-white/70 backdrop-blur-xl border border-white/30 rounded-2xl shadow-soft-2xl text-brand-dark p-6 flex flex-col gap-4"
+        >
+            <div className="flex justify-between items-center">
+                <h2 className="text-2xl font-bold">文件传输</h2>
+                <button onClick={onAddFiles} className="w-10 h-10 bg-brand-yellow rounded-full flex items-center justify-center text-brand-dark hover:brightness-105 transition-all shadow-sm">
+                    <Plus size={24} />
+                </button>
+            </div>
+            <div className="space-y-2 max-h-40 overflow-y-auto pr-2">
+                {files.map((file, index) => (
+                    <div key={`${file.name}-${index}`} className="flex items-center gap-3 p-2 rounded-lg bg-black/5">
+                        {file.name.toLowerCase().endsWith('.zip') ? 
+                          <FolderPlus className="text-brand-light flex-shrink-0" /> :
+                          <FileText className="text-brand-light flex-shrink-0" />
+                        }
+                        <div className="flex-grow truncate">
+                            <p className="font-medium truncate">{file.name}</p>
+                            <p className="text-sm text-brand-light">{formatBytes(file.size)}</p>
+                        </div>
+                        <button onClick={() => onRemoveFile(file)} className="p-1 text-slate-400 hover:text-red-500"><Trash2 size={16}/></button>
+                    </div>
+                ))}
+            </div>
+            <p className="text-right font-medium text-sm text-brand-light">共 {files.length} 个文件 / {formatBytes(totalSize)}</p>
+            <div className="border-t border-black/10 my-2"></div>
+            
+            <div className="space-y-4">
+                 <div className="flex justify-between items-center">
+                    <label className="font-semibold flex items-center gap-2">加密传输</label>
+                    <ToggleSwitch enabled={usePassword} setEnabled={setUsePassword} accentClass="bg-brand-yellow" />
+                </div>
+                {usePassword && (
+                    <motion.div initial={{opacity:0, height: 0}} animate={{opacity: 1, height: 'auto'}} className="overflow-hidden">
+                        <div className="relative">
+                            <KeyRound className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
+                            <input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="请输入密码" className="w-full bg-black/5 p-2 pl-10 rounded-md border-slate-200 focus:border-brand-yellow focus:ring-brand-yellow transition"/>
+                        </div>
+                    </motion.div>
+                )}
+                 <div className="flex justify-between items-center">
+                    <label className="font-semibold flex items-center gap-2">阅后即焚</label>
+                    <ToggleSwitch enabled={downloadOnce} setEnabled={setDownloadOnce} />
+                </div>
+                <div className="flex justify-between items-center">
+                    <label className="font-semibold">有效期</label>
+                    <select value={expiry} onChange={e => setExpiry(Number(e.target.value))} className="bg-black/5 border-none rounded-md font-semibold focus:ring-2 focus:ring-brand-cyan">
+                        <option value={180}>3分钟</option>
+                        <option value={600}>10分钟</option>
+                        <option value={3600}>1小时</option>
+                        <option value={86400}>24小时</option>
+                        <option value={604800}>7天</option>
+                    </select>
+                </div>
+            </div>
+            <div className="flex items-start gap-3 mt-4">
+                <div 
+                    onClick={() => setTosAccepted(!tosAccepted)}
+                    className={`h-4 w-4 mt-1 rounded border-2 cursor-pointer flex items-center justify-center transition-all duration-200 flex-shrink-0 ${
+                        tosAccepted 
+                            ? 'bg-brand-cyan border-brand-cyan' 
+                            : 'bg-white border-slate-300 hover:border-slate-400'
+                    }`}
+                >
+                    {tosAccepted && <Check size={10} className="text-white" />}
+                </div>
+                <label className="text-xs text-brand-light cursor-pointer select-none" onClick={() => setTosAccepted(!tosAccepted)}>
+                    我已阅读且同意 用户协议 和 隐私政策 并对我分享的文件的合法合规性负责
+                </label>
+            </div>
+            <div className="flex gap-4 mt-2">
+                 <button onClick={onCancel} className="flex-1 bg-slate-200 text-brand-light font-bold py-3 rounded-lg hover:bg-slate-300 transition-colors">取消</button>
+                 <button onClick={onStartUpload} disabled={!tosAccepted || files.length === 0 || isProcessing} className="flex-1 bg-brand-cyan text-white font-bold py-3 rounded-lg hover:brightness-110 transition-all disabled:bg-slate-300 disabled:cursor-not-allowed flex items-center justify-center">
+                    {isProcessing ? <X className="animate-spin"/> : '开始上传'}
+                 </button>
+            </div>
+        </motion.div>
+    );
+};
+
+const containerVariants = {
+    hidden: { opacity: 0 },
+    visible: {
+        opacity: 1,
+        transition: {
+            staggerChildren: 0.15,
+            delayChildren: 0.2,
+        },
+    },
+};
+
+const itemVariants = {
+    hidden: { y: 20, opacity: 0 },
+    visible: {
+        y: 0,
+        opacity: 1,
+        transition: { type: 'spring', stiffness: 100 } as const,
+    },
+};
+
+
+const UploaderPage = () => {
+    const { code: accessCodeInput, resetCode, setIsInputMode } = useUploaderStore();
+    const [view, setView] = useState<'initial' | 'settings' | 'transferring' | 'success'>('initial');
+    const [files, setFiles] = useState<File[]>([]);
+    const folderInputRef = useRef<HTMLInputElement>(null);
+    const navigate = useNavigate();
+    const [uploadProgress, setUploadProgress] = useState(0);
+    const [uploadSpeed, setUploadSpeed] = useState("0 B/s");
+    const [error, setError] = useState<string | null>(null);
+    const [shareDetails, setShareDetails] = useState<ShareDetails | null>(null);
+    const [usePassword, setUsePassword] = useState(false);
+    const [password, setPassword] = useState('');
+    const [copiedLink, setCopiedLink] = useState(false);
+    const [copiedCode, setCopiedCode] = useState(false);
+    const [showQRCode, setShowQRCode] = useState(false);
+    const uploadController = useRef<AbortController | null>(null);
+    const [expiry, setExpiry] = useState(180); 
+    const [downloadOnce, setDownloadOnce] = useState(false);
+    const [processedFilename, setProcessedFilename] = useState('');
+    const [isProcessing, setIsProcessing] = useState(false);
+    const [isSubmittingCode, setIsSubmittingCode] = useState(false); // ✨ 新增状态
+    const totalUploadSize = useMemo(() => files.reduce((acc, file) => acc + file.size, 0), [files]);
+
+    const resetState = useCallback(() => {
+        if(folderInputRef.current) {
+            folderInputRef.current.value = "";
+        }
+        setView('initial');
+        if (uploadController.current) {
+            uploadController.current.abort("用户取消上传");
+            uploadController.current = null;
+        }
+        setFiles([]);
+        setUploadProgress(0);
+        setUploadSpeed("0 B/s");
+        setError(null);
+        setShareDetails(null);
+        setUsePassword(false);
+        setPassword('');
+        setCopiedLink(false);
+        setCopiedCode(false);
+        setShowQRCode(false);
+        setExpiry(180);
+        setDownloadOnce(false);
+        resetCode();
+        setIsInputMode(false);
+        setProcessedFilename('');
+        setIsProcessing(false);
+        setIsSubmittingCode(false); // ✨ 重置提交状态
+    }, [resetCode, setIsInputMode]);
+
+    useEffect(() => {
+        return () => {
+            resetState();
+        }
+    }, [resetState]);
+
+    const initiateStreamUpload = async (file: File) => {
+        if (usePassword && password.length < 6) {
+             setError("加密密码必须至少为6位。");
+             setView('settings');
+             setIsProcessing(false);
+             return;
+        }
+        uploadController.current = new AbortController();
+        try {
+            let uploadableStream: ReadableStream<Uint8Array>;
+            let salt: Uint8Array | null = null;
+            let verificationHash: string | null = null;
+            
+            const progressStream = createProgressStream(file.size, setUploadProgress, setUploadSpeed);
+            let sourceStream = file.stream().pipeThrough(progressStream);
+
+            if (usePassword && password) {
+                salt = E2EE.generateSalt();
+                const [key, hash] = await Promise.all([
+                    E2EE.deriveKeyFromPassword(password, salt),
+                    E2EE.createVerificationHash(password, salt)
+                ]);
+                verificationHash = hash;
+                const chunkingStream = E2EE.createChunkingStream();
+                const encryptionStream = E2EE.createEncryptionStream(key);
+                uploadableStream = sourceStream.pipeThrough(chunkingStream).pipeThrough(encryptionStream) as ReadableStream<Uint8Array>;
+            } else {
+                uploadableStream = sourceStream;
+            }
+            
+            const headers: Record<string, string> = {
+                'Content-Type': 'application/octet-stream',
+                'X-File-Name': encodeURIComponent(file.name),
+                'X-File-Original-Size': file.size.toString(),
+                'X-File-Encrypted': usePassword.toString(),
+                'X-File-Expires-In': expiry.toString(),
+                'X-File-Download-Once': downloadOnce.toString()
+            };
+
+            if (salt) headers['X-File-Salt'] = E2EE.bufferToBase64(salt);
+            if (verificationHash) headers['X-File-Verification-Hash'] = verificationHash;
+
+            const uploadResponse = await fetch(`${DIRECT_API_BASE_URL}/api/v1/uploads/stream-complete`, {
+                method: 'POST', headers, body: uploadableStream, signal: uploadController.current.signal, 
+                //@ts-ignore
+                duplex: 'half',
+            });
+
+            if (!uploadResponse.ok) {
+                const errorText = await uploadResponse.text();
+                try { throw new Error(JSON.parse(errorText).message || errorText); } catch { throw new Error(errorText); }
+            }
+            
+            const details = await uploadResponse.json();
+            setShareDetails(details);
+            setUploadProgress(100);
+            setView('success');
+
+        } catch (err: any) {
+            if (err.name !== 'AbortError') {
+                setError(err.message || "上传时发生未知错误");
+                setView('settings');
+            } else {
+                resetState();
+            }
+        } finally {
+            setIsProcessing(false);
+        }
+    };
+    
+    const handleStartUpload = async () => {
+        setError(null);
+        setIsProcessing(true);
+        
+        if (files.length > 1) {
+            setView('transferring');
+            setUploadSpeed("正在压缩...");
+            try {
+                const zip = new JSZip();
+                files.forEach(file => zip.file(file.name, file));
+                const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+                const archiveName = `archive-${Date.now()}.zip`;
+                const archiveFile = new File([zipBlob], archiveName, { type: 'application/zip' });
+                
+                setFiles([archiveFile]); 
+                setProcessedFilename(archiveName);
+                await initiateStreamUpload(archiveFile);
+            } catch (err) {
+                setError("压缩文件失败");
+                setView('settings');
+                setIsProcessing(false);
+            }
+        } else if (files.length === 1) {
+            setView('transferring');
+            setUploadSpeed("计算中...");
+            setProcessedFilename(files[0].name);
+            await initiateStreamUpload(files[0]);
+        } else {
+            setIsProcessing(false);
+        }
+    };
+    
+    const onDrop = useCallback((acceptedFiles: File[]) => {
+        if (acceptedFiles.length > 0) {
+            setFiles(prev => [...prev, ...acceptedFiles].filter((f, i, self) => i === self.findIndex(t => t.name === f.name && t.size === f.size)));
+            setView('settings');
+        }
+    }, []);
+
+    const handleFolderSelect = async (e: ChangeEvent<HTMLInputElement>) => {
+        const selectedFiles = e.target.files;
+        if (!selectedFiles || selectedFiles.length === 0) {
+            return;
+        }
+        
+        const filesArray = Array.from(selectedFiles);
+        
+        // @ts-ignore: webkitRelativePath is not in standard File type but exists
+        const rootFolderName = filesArray[0].webkitRelativePath.split('/')[0];
+        const zipFileName = `${rootFolderName}.zip`;
+
+        setError(null);
+        setIsProcessing(true);
+        setView('settings');
+        setFiles([]);
+
+        setFiles([{ name: `正在压缩 ${rootFolderName}...`, size: 0, type: 'application/zip' } as File]);
+
+        try {
+            const zip = new JSZip();
+            for (const file of filesArray) {
+                // @ts-ignore
+                zip.file(file.webkitRelativePath, file);
+            }
+            
+            const zipBlob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+            const finalZipFile = new File([zipBlob], zipFileName, { type: 'application/zip' });
+            
+            setFiles([finalZipFile]);
+            
+        } catch (err) {
+            setError("压缩文件夹失败");
+            setFiles([]);
+            setView('initial');
+        } finally {
+            setIsProcessing(false);
+        }
+    };
+    
+    const { getRootProps, getInputProps, open: openFileDialog, isDragActive } = useDropzone({ 
+        onDrop, 
+        noClick: true, 
+        noKeyboard: true 
+    });
+    
+    const handleRemoveFile = (fileToRemove: File) => {
+        const updatedFiles = files.filter(file => file !== fileToRemove);
+        if (updatedFiles.length === 0) setView('initial');
+        else setFiles(updatedFiles);
+    };
+
+    const copyToClipboard = (text: string, type: 'link' | 'code') => {
+        navigator.clipboard.writeText(text).then(() => { 
+            if (type === 'link') setCopiedLink(true); else setCopiedCode(true);
+            setTimeout(() => { if (type === 'link') setCopiedLink(false); else setCopiedCode(false); }, 2000);
+        });
+    };
+
+    // ✨ 更新提交逻辑以包含加载状态
+    const handleAccessCodeSubmit = (e: FormEvent) => {
+        e.preventDefault();
+        if (accessCodeInput.trim().length === 6 && !isSubmittingCode) {
+            setIsSubmittingCode(true);
+            setTimeout(() => {
+                navigate(`/download/${accessCodeInput.trim().toUpperCase()}`);
+                // 组件即将卸载，无需重置状态，但以防万一
+                setIsSubmittingCode(false);
+            }, 500);
+        }
+    };
+
+    const handleCodeComplete = (completedCode: string) => {
+        if (!isSubmittingCode) {
+            setIsSubmittingCode(true);
+            setTimeout(() => {
+                navigate(`/download/${completedCode.trim().toUpperCase()}`);
+                setIsSubmittingCode(false);
+            }, 500);
+        }
+    };
+
+    const renderContent = () => {
+        switch(view) {
+            case 'transferring':
+            case 'success':
+                const isSuccess = view === 'success';
+                const shareUrl = shareDetails ? `${window.location.origin}${shareDetails.urlPath}` : '';
+                const expiryDate = new Date(Date.now() + expiry * 1000).toISOString();
+                
+                return (
+                     <motion.div 
+                        key="result" 
+                        variants={containerVariants}
+                        initial="hidden"
+                        animate="visible"
+                        className="w-full max-w-5xl mx-auto p-4 md:p-8 grid grid-cols-1 lg:grid-cols-5 gap-8 items-center"
+                     >
+                        <motion.div
+                            variants={itemVariants}
+                            className="lg:col-span-2 flex flex-col items-center justify-center text-center"
+                        >
+                            <UploadProgressCircle progress={uploadProgress} status={view} speed={uploadSpeed} />
+                            <h2 className="text-3xl font-bold mt-4 text-brand-dark">{isSuccess ? '已完成' : '传输中'}</h2>
+                            <p className="text-brand-light -mt-1 mb-6">
+                                {isSuccess ? '文件已准备就绪' : '请保持页面开启'}
+                            </p>
+                            
+                            {isSuccess && (
+                                <div className="flex gap-4">
+                                    <motion.button 
+                                        onClick={resetState} 
+                                        whileHover={{scale: 1.05, filter: 'brightness(1.1)'}} 
+                                        whileTap={{scale:0.95, filter: 'brightness(0.95)'}} 
+                                        className="bg-brand-cyan text-white font-bold py-3 px-6 rounded-lg transition-all flex items-center justify-center gap-2 shadow-soft-lg"
+                                    >
+                                        <Repeat size={18} /> 再传一次
+                                    </motion.button>
+                                </div>
+                            )}
+                        </motion.div>
+
+                        <motion.div 
+                            variants={itemVariants}
+                            className="lg:col-span-3 bg-white/60 backdrop-blur-xl border border-white/20 rounded-2xl shadow-soft-xl p-6 text-brand-dark"
+                        >
+                             <h3 className="text-xl font-bold mb-1">传输预览</h3>
+                             <div className="flex items-center gap-2 text-sm text-brand-light mb-4">
+                                <Clock size={14}/>
+                                <HumanizedCountdown expiresAt={expiryDate} />
+                             </div>
+                             <div className="bg-black/5 border border-black/5 rounded-xl p-4 mb-6">
+                                <div className="flex items-center gap-3">
+                                    <div className="p-3 bg-white/80 rounded-lg">
+                                       {processedFilename.toLowerCase().endsWith('.zip') ? 
+                                          <FolderPlus className="text-brand-cyan"/> :
+                                          <FileText className="text-brand-cyan"/>
+                                       }
+                                    </div>
+                                    <div className="flex-grow truncate">
+                                        <p className="font-bold truncate">{processedFilename || "..."}</p>
+                                        <p className="text-sm text-brand-light">
+                                            {processedFilename.toLowerCase().endsWith('.zip') ? "文件夹" : `${files.length} 个文件`} / {formatBytes(totalUploadSize)}
+                                        </p>
+                                    </div>
+                                </div>
+                             </div>
+
+                            {isSuccess && shareDetails && (
+                                <motion.div 
+                                    className="w-full space-y-4"
+                                    variants={containerVariants}
+                                    initial="hidden"
+                                    animate="visible"
+                                >
+                                    <motion.h3 variants={itemVariants} className="text-xl font-bold">链接或口令分享</motion.h3>
+                                    
+                                    <motion.div variants={itemVariants} className="relative">
+                                        <input type="text" readOnly value={shareUrl} className="w-full bg-black/5 p-3 pr-24 rounded-lg border-2 border-transparent text-brand-dark truncate focus:outline-none focus:border-brand-cyan"/>
+                                        <div className="absolute right-2 top-1/2 -translate-y-1/2 flex gap-1">
+                                            <button 
+                                                onClick={() => setShowQRCode(!showQRCode)}
+                                                className={`p-2 rounded-md transition-colors ${showQRCode ? 'bg-brand-cyan text-white' : 'text-slate-400 hover:text-brand-cyan'}`}
+                                            >
+                                                <QrCode size={20} />
+                                            </button>
+                                            <button onClick={() => copyToClipboard(shareUrl, 'link')} className="p-2 w-9 h-9 flex items-center justify-center rounded-md bg-slate-200 hover:bg-brand-mint transition-colors text-brand-dark">
+                                                <AnimatePresence mode="wait" initial={false}>
+                                                    {copiedLink ? (
+                                                        <motion.div key="check" initial={{ scale: 0.5, opacity: 0, rotate: -90 }} animate={{ scale: 1, opacity: 1, rotate: 0 }} exit={{ scale: 0.5, opacity: 0, rotate: 90 }} transition={{ type: 'spring', stiffness: 400, damping: 20 }}>
+                                                            <Check size={20}/>
+                                                        </motion.div>
+                                                    ) : (
+                                                        <motion.div key="copy" initial={{ scale: 0.5, opacity: 0, rotate: -90 }} animate={{ scale: 1, opacity: 1, rotate: 0 }} exit={{ scale: 0.5, opacity: 0, rotate: 90 }} transition={{ type: 'spring', stiffness: 400, damping: 20 }}>
+                                                            <Copy size={20}/>
+                                                        </motion.div>
+                                                    )}
+                                                </AnimatePresence>
+                                            </button>
+                                        </div>
+                                    </motion.div>
+
+                                    <motion.div variants={itemVariants} className="relative">
+                                        <input type="text" readOnly value={shareDetails.accessCode} className="w-full bg-black/5 p-3 pr-14 rounded-lg border-2 border-transparent text-brand-dark font-mono tracking-widest text-center text-lg focus:outline-none focus:border-brand-cyan"/>
+                                        <button onClick={() => copyToClipboard(shareDetails.accessCode, 'code')} className="absolute right-2 top-1/2 -translate-y-1/2 p-2 w-9 h-9 flex items-center justify-center rounded-md bg-slate-200 hover:bg-brand-mint transition-colors text-brand-dark">
+                                            <AnimatePresence mode="wait" initial={false}>
+                                                {copiedCode ? (
+                                                    <motion.div key="check-code" initial={{ scale: 0.5, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.5, opacity: 0 }}>
+                                                        <Check size={20}/>
+                                                    </motion.div>
+                                                ) : (
+                                                    <motion.div key="copy-code" initial={{ scale: 0.5, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.5, opacity: 0 }}>
+                                                        <Copy size={20}/>
+                                                    </motion.div>
+                                                )}
+                                            </AnimatePresence>
+                                        </button>
+                                    </motion.div>
+
+                                    <AnimatePresence>
+                                        {showQRCode && (
+                                            <motion.div 
+                                                initial={{ opacity: 0, height: 0, y: 20 }}
+                                                animate={{ opacity: 1, height: 'auto', y: 0 }}
+                                                exit={{ opacity: 0, height: 0, y: 20 }}
+                                                className="bg-white p-4 rounded-lg mt-3"
+                                            >
+                                                <div className="relative flex justify-center items-center">
+                                                    <QRCodeSVG
+                                                        value={shareUrl}
+                                                        size={160}
+                                                        fgColor="#2BD8FB"
+                                                        bgColor="transparent"
+                                                        level="H"
+                                                    />
+                                                    <div className="absolute w-10 h-10 bg-white rounded-lg flex items-center justify-center shadow-md">
+                                                        <Feather className="text-brand-cyan" size={24} />
+                                                    </div>
+                                                </div>
+                                            </motion.div>
+                                        )}
+                                    </AnimatePresence>
+                                </motion.div>
+                            )}
+
+                             {!isSuccess && <p className="text-center text-brand-light">完成传输后，将在此处显示分享详情。</p>}
+                        </motion.div>
+                     </motion.div>
+                );
+
+            case 'settings':
+                return (
+                     <UploadSettingsPanel
+                        files={files}
+                        onAddFiles={openFileDialog}
+                        onRemoveFile={handleRemoveFile}
+                        onStartUpload={handleStartUpload}
+                        onCancel={resetState}
+                        usePassword={usePassword}
+                        setUsePassword={setUsePassword}
+                        password={password}
+                        setPassword={setPassword}
+                        expiry={expiry}
+                        setExpiry={setExpiry}
+                        downloadOnce={downloadOnce}
+                        setDownloadOnce={setDownloadOnce}
+                        isProcessing={isProcessing}
+                    />
+                );
+            case 'initial':
+            default:
+                return (
+                    <motion.div key="initial" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex flex-col items-center justify-center w-full gap-12">
+                        <InteractiveUploader
+                            onAddFileClick={openFileDialog}
+                            onAddFolderClick={() => folderInputRef.current?.click()}
+                            onCodeSubmit={handleAccessCodeSubmit}
+                            onCodeComplete={handleCodeComplete}
+                            isSubmittingCode={isSubmittingCode}
+                        />
+                    </motion.div>
+                );
+        }
+    };
+
+    return (
+        <div {...getRootProps({ className: "relative w-full outline-none p-4 md:p-8 flex flex-col items-center justify-center min-h-[60vh] md:min-h-[500px] flex-grow" })}>
+            <input {...getInputProps()} />
+            <input
+                type="file"
+                ref={folderInputRef}
+                onChange={handleFolderSelect}
+                style={{ display: 'none' }}
+                // @ts-ignore
+                webkitdirectory=""
+                directory=""
+            />
+            
+            <AnimatePresence mode="wait">
+              {renderContent()}
+            </AnimatePresence>
+            
+            {error && <p className="text-center text-red-500 mt-4 p-3 rounded-lg bg-red-100">{error}</p>}
+
+            <AnimatePresence>
+                {isDragActive && (
+                    <motion.div
+                        className="absolute inset-0 bg-brand-cyan/20 backdrop-blur-sm flex flex-col items-center justify-center z-50 pointer-events-none border-4 border-dashed border-brand-cyan rounded-3xl"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                    >
+                        <motion.div
+                           initial={{ y: 20, scale: 0.9 }}
+                           animate={{ y: 0, scale: 1 }}
+                           transition={{ type: 'spring', stiffness: 300, damping: 20 } as const}
+                        >
+                            <UploadCloud className="w-24 h-24 text-brand-cyan" />
+                        </motion.div>
+                        <p className="mt-4 text-2xl font-bold text-brand-dark">松手即可添加文件</p>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+        </div>
+    );
+};
+
+export default UploaderPage;
+```
+
+frontend/src/store/uploaderStore.ts
+```
+// frontend/src/store/uploaderStore.ts
+import { create } from 'zustand';
+
+// 定义 state 和 actions 的类型
+interface UploaderState {
+  isInputMode: boolean;
+  code: string;
+  setIsInputMode: (isInput: boolean) => void;
+  setCode: (newCode: string) => void;
+  resetCode: () => void;
+}
+
+// 创建 store
+export const useUploaderStore = create<UploaderState>((set) => ({
+  // 初始状态
+  isInputMode: false,
+  code: '',
+
+  // Actions
+  setIsInputMode: (isInput) => set({ isInputMode: isInput }),
+  setCode: (newCode) => set({ code: newCode }),
+  resetCode: () => set({ code: '' }),
+}));
+```
+
+frontend/src/vite-env.d.ts
+```
+/// <reference types="vite/client" />
+
+```
+
